@@ -381,9 +381,9 @@ void Run::EndOfRun()
              << std::setw(5)  << il 
              << std::setw(20) << fCHTrackLPerLayer[il]*norm/mm 
              << std::setw(20) << fEDepPerLayer[il]*norm/MeV
-             << std::setw(20) << edep_sq*norm/MeV
-             << std::setw(20) << edep_d*norm/MeV
-             << std::setw(20) << edep_dsq*norm/MeV/MeV
+             << std::setw(20) << edep_sq*norm/MeV/MeV
+             << std::setw(20) << edep_d*norm/MeV // maybe need different unit for the derivative, depends on unit of input that we differentiate with respect to
+             << std::setw(20) << edep_dsq*norm/MeV/MeV // here as well
              << G4endl;
       edeps << il << " " << std::setprecision(15) << fEDepPerLayer[il]*norm/MeV << " " << edep_sq*norm/MeV/MeV << " " << edep_d*norm/MeV << " " << edep_dsq*norm/MeV/MeV << std::endl;
   }
