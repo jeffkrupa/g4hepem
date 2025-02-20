@@ -89,7 +89,9 @@ class Run : public G4Run
     std::vector<G4double> fEDepSinglePerLayer; // edeps collected for a single event
     std::vector<passivedouble> fEDepSqPerLayer; // accumulate squares of edep, summed over all events
     std::vector<passivedouble> fEDepDPerLayer; // accumulate edep derivatives, summed over all events
+    std::vector<passivedouble> fEDepSquaredDPerLayer; // accumulate derivatives of edep squared, summed over all events
     std::vector<passivedouble> fEDepDSqPerLayer; // accumulate squares of edep derivatives, summed over all events
+    std::vector<passivedouble> fEDepSquaredDSqPerLayer; // accumulate squares of derivatives of edep squared, summed over all events
 
     G4double fChargedStep;
     G4double fNeutralStep;

@@ -36,6 +36,7 @@
 #include "PrimaryGeneratorAction.hh"
 #include "HistoManager.hh"
 #include "EmAcceptance.hh"
+#include "Randomize.hh"
 
 #include "G4ParticleTable.hh"
 #include "G4ParticleDefinition.hh"
@@ -81,6 +82,8 @@ Run::Run(DetectorConstruction* det)
   fEDepSqPerLayer.resize(fDetector->GetNbOfLayers(),0.0);
   fEDepDPerLayer.resize(fDetector->GetNbOfLayers(),0.0);
   fEDepDSqPerLayer.resize(fDetector->GetNbOfLayers(),0.0);
+  fEDepSquaredDPerLayer.resize(fDetector->GetNbOfLayers(),0.0);
+  fEDepSquaredDSqPerLayer.resize(fDetector->GetNbOfLayers(),0.0);
   //initialize Eflow
   //
   G4int nbPlanes = (fDetector->GetNbOfLayers())*(fDetector->GetNbOfAbsor()) + 2;
@@ -183,6 +186,9 @@ void Run::Merge(const G4Run* run)
     fEDepSqPerLayer[il]     += localRun->fEDepSqPerLayer[il];
     fEDepDPerLayer[il]     += localRun->fEDepDPerLayer[il];
     fEDepDSqPerLayer[il]     += localRun->fEDepDSqPerLayer[il];
+    fEDepSquaredDPerLayer[il] += localRun->fEDepSquaredDPerLayer[il];
+    fEDepSquaredDSqPerLayer[il] += localRun->fEDepSquaredDSqPerLayer[il];
+
   }
 
   fChargedStep += localRun->fChargedStep;
@@ -299,6 +305,11 @@ void Run::EndOfRun()
   G4cout << " Mean number of neutral steps  " << fNeutralStep << G4endl;
   G4cout << "------------------------------------------------------------\n";
 
+    
+  G4cout << "\n------------------------------------------------------------\n";
+  G4cout << " Number of events:  " << nEvt << G4endl;
+  G4cout << "------------------------------------------------------------\n";
+
   //Energy flow
   //
   G4AnalysisManager* analysis = G4AnalysisManager::Instance();
@@ -365,14 +376,23 @@ void Run::EndOfRun()
   G4cout << " \n ----------------------------------------------------------- \n"
          << " ----------------   Layer by layer mean data  -------------- \n"
          << " ----------------------------------------------------------- \n";
-  G4cout << "  #Layers   Charged-TrakL [mm]   Energy-Dep [MeV]    Mean Sq Edep       Mean EdepDiff     Mean Sq EdepDiff " << G4endl << G4endl;
+  G4cout << "  #Layers   Charged-TrakL [mm]   Energy-Dep [MeV]    Mean Sq Edep       Mean EdepDiff     Mean Sq EdepDiff       Mean EdepSqDiff     Mean Sq EdepSqDiff" << G4endl << G4endl;
   G4cout.setf(std::ios::scientific);
   G4cout.precision(6);
-  std::ofstream edeps("edeps");
+  int theSeed = G4Random::getTheSeed();
+
+  G4cout << "\n------------------------------------------------------------\n";
+  G4cout << " The Seed:  " << theSeed << G4endl;
+  G4cout << "------------------------------------------------------------\n";
+
+  std::string theSeed_str = std::to_string(theSeed);
+  std::ofstream edeps("edeps_"+theSeed_str);
   for (G4int il = 0; il < nLayers; ++il)  {
       passivedouble edep_sq = fEDepSqPerLayer[il]; // mean squared edep
       passivedouble edep_d = fEDepDPerLayer[il]; // mean derivative of edep
+      passivedouble edep_squared_d = fEDepSquaredDPerLayer[il];
       passivedouble edep_dsq = fEDepDSqPerLayer[il]; // mean squared derivative of edep
+      passivedouble edep_squared_dsq = fEDepSquaredDSqPerLayer[il];
       passivedouble edep_d_2 = 0.;
       #ifdef DERIVGRIND_VALIDATION
         DG_GET_DOTVALUE(&fEDepPerLayer[il].val, &edep_d_2, sizeof(double));
@@ -381,11 +401,14 @@ void Run::EndOfRun()
              << std::setw(5)  << il 
              << std::setw(20) << fCHTrackLPerLayer[il]*norm/mm 
              << std::setw(20) << fEDepPerLayer[il]*norm/MeV
-             << std::setw(20) << edep_sq*norm/MeV
+             << std::setw(20) << edep_sq*norm/MeV/MeV
              << std::setw(20) << edep_d*norm/MeV
              << std::setw(20) << edep_dsq*norm/MeV/MeV
+             << std::setw(20) << edep_squared_d*norm/MeV/MeV
+             << std::setw(20) << edep_squared_dsq*norm/MeV/MeV/MeV/MeV
+
              << G4endl;
-      edeps << il << " " << std::setprecision(15) << fEDepPerLayer[il]*norm/MeV << " " << edep_sq*norm/MeV/MeV << " " << edep_d*norm/MeV << " " << edep_dsq*norm/MeV/MeV << std::endl;
+      edeps << il << " " << std::setprecision(15) << fEDepPerLayer[il]*norm/MeV << " " << edep_sq*norm/MeV/MeV << " " << edep_d*norm/MeV << " " << edep_dsq*norm/MeV/MeV << " " << edep_squared_d*norm/MeV/MeV << " " << edep_squared_dsq*norm/MeV/MeV/MeV/MeV << std::endl;
   }
   G4cout << G4endl;
   G4cout << " \n ================================================================== \n"

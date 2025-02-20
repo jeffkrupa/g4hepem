@@ -27,8 +27,8 @@
 
 // tlData GetPrimaryElectronTrack needs to be set needs to be set based on the G4Track;
 
-#define NOMSC
-#define NOFLUCTUATION
+//#define NOMSC
+//#define NOFLUCTUATION
 
 
 // Note: pStepLength will be set here i.e. this is the first access to it that
@@ -135,28 +135,30 @@ void G4HepEmElectronManager::HowFarToMSC(struct G4HepEmData* hepEmData, struct G
   mscData->SetNewDirection(0., 0., 1.);
   // no msc in case of very small steps
   const G4double kGeomMinLength = 5.E-8; // 0.05 [nm]
-  if (pStepLength > kGeomMinLength && theEkin > 1.0E-3) {
+  if (pStepLength > kGeomMinLength && theEkin > 1.E-3) { //default
+  //if (pStepLength > kGeomMinLength && theEkin > 10.) {
+
     mscData->fIsActive = true;
     // compute the fist transport mean free path
-    mscData->fLambtr1  = GetTransportMFP(theElectronData, theImat, theEkin, theLEkin);
+    mscData->fLambtr1  = GetTransportMFP(theElectronData, theImat, theEkin, theLEkin); //JK This is fine
     G4HepEmElectronInteractionUMSC::StepLimit(hepEmData, hepEmPars, mscData, theEkin, theImat, range,
-                                              theTrack->GetSafety(), theTrack->GetOnBoundary(), isElectron, rnge);
+                                              theTrack->GetSafety(), theTrack->GetOnBoundary(), isElectron, rnge); //JK mscData FP dotvalues can be set to zero below threshold
     // If msc limited the true step length, then the G4HepEmMSCTrackData::fTrueStepLength member of
     // the input electron track is < pStepLengt. Otherwise its = pStepLengt.
     // Call the True --> Geometric conversion since that might limits further the true step Length:
     //   - convert the physical step length to geometrical one. The result will be
     //     written into mscData::fZPathLength.
-    ConvertTrueToGeometricLength(hepEmData, mscData, theEkin, range, theIMC, isElectron);
+    ConvertTrueToGeometricLength(hepEmData, mscData, theEkin, range, theIMC, isElectron); //JK mscData FP dotvalues can be set to zero below threshold
     // check now if msc limited the step:
-    const G4double mscTruStepLength = mscData->fTrueStepLength;
+    const G4double mscTruStepLength = mscData->fTrueStepLength; //JK dotvalue can be set to zero below threshold
     if (mscTruStepLength < pStepLength) {
       // indicate continuous step limit as msc limited the step and set the new pStepLength
       theTrack->SetWinnerProcessIndex(-2);
       pStepLength = mscTruStepLength;
-      theElTrack->SetPStepLength(pStepLength);
+      theElTrack->SetPStepLength(pStepLength); // set to (G4double)(pStepLength.val) under condition. This sets the derivative to 0.  
     }
     // set geometrical step length (protect agains wrong conversion, i.e. if gL > pL)
-    theTrack->SetGStepLength(G4HepEmMin(mscData->fZPathLength, pStepLength));
+    theTrack->SetGStepLength(G4HepEmMin(mscData->fZPathLength, pStepLength)); //set to (G4double)(G4HepEmMin(mscData->fZPathLength, pStepLength).val) under condition
   }
 #endif
 }

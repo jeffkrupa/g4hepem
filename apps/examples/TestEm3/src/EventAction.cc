@@ -84,8 +84,12 @@ void EventAction::EndOfEventAction(const G4Event*)
     passivedouble val = (passivedouble)run->fEDepSinglePerLayer[k];
     run->fEDepSqPerLayer[k] += val*val; 
     passivedouble diff = GET_DOTVALUE(run->fEDepSinglePerLayer[k]);
+    G4double tmp_square = run->fEDepSinglePerLayer[k] * run->fEDepSinglePerLayer[k]; //std::pow(run->fEDepSinglePerLayer[k], 2);
+    passivedouble diff_of_squared = GET_DOTVALUE(tmp_square);
     run->fEDepDPerLayer[k] += diff;
+    run->fEDepSquaredDPerLayer[k] += diff_of_squared;
     run->fEDepDSqPerLayer[k] += diff*diff;
+    run->fEDepSquaredDSqPerLayer[k] += diff_of_squared*diff_of_squared;
   }
 }
 
