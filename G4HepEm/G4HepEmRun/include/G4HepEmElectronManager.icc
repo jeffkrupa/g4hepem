@@ -136,14 +136,17 @@ void G4HepEmElectronManager::HowFarToMSC(struct G4HepEmData* hepEmData, struct G
   mscData->SetNewDirection(0., 0., 1.);
   // no msc in case of very small steps
   const G4double kGeomMinLength = 5.E-8; // 0.05 [nm]
-  bool derivativesInactive = (theEkin < 1.E-3);
+  bool derivativesInactive = (theEkin < 10.);
   std::function<G4double(G4double)> stopgradient = [derivativesInactive](G4double x)->G4double {if(derivativesInactive) return x.val; else return x; };
+  //bool XX = true;
+  //std::function<G4double(G4double)> stopgradient = [XX](G4double x)->G4double {return x;};
+
   if (pStepLength > kGeomMinLength && theEkin > 1.E-3) { //default
   //if (pStepLength > kGeomMinLength && theEkin > 10.) {
     
     mscData->fIsActive = true;
     // compute the fist transport mean free path
-    mscData->fLambtr1  = GetTransportMFP(theElectronData, theImat, theEkin, theLEkin); //JK This is fine
+    mscData->fLambtr1  = stopgradient(GetTransportMFP(theElectronData, theImat, theEkin, theLEkin)); //JK This is fine
     G4HepEmElectronInteractionUMSC::StepLimit(hepEmData, hepEmPars, mscData, theEkin, theImat, range,
                                               theTrack->GetSafety(), theTrack->GetOnBoundary(), isElectron, rnge, stopgradient); //JK mscData FP dotvalues can be set to zero below threshold
     // If msc limited the true step length, then the G4HepEmMSCTrackData::fTrueStepLength member of
