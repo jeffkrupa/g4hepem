@@ -1,4 +1,5 @@
 #include "ad_type.h"
+#include <functional>
 #include "G4HepEmElectronInteractionUMSC.hh"
 
 #include "G4HepEmRandomEngine.hh"
@@ -19,7 +20,7 @@
 // one that is done in the G4HepEmElectronManager.
 void G4HepEmElectronInteractionUMSC::StepLimit(G4HepEmData* hepEmData, G4HepEmParameters* hepEmPars,
     G4HepEmMSCTrackData* mscData, G4double ekin, int imat, G4double range, G4double presafety,
-    bool onBoundary, bool iselectron, G4HepEmRandomEngine* rnge) {
+    bool onBoundary, bool iselectron, G4HepEmRandomEngine* rnge, std::function<G4double(G4double)> stopgradient) {
   // Initial values:
   //  - lengths are already initialised to the current minimum physics step  which is the true, minimum
   //    step length from all other physics

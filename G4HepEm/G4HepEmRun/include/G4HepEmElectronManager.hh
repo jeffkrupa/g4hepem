@@ -1,5 +1,5 @@
 #include "ad_type.h"
-
+#include <functional>
 #ifndef G4HepEmElectronManager_HH
 #define G4HepEmElectronManager_HH
 
@@ -264,7 +264,7 @@ public:
 
   G4HepEmHostDevice
   static void   ConvertTrueToGeometricLength(const G4HepEmData* hepEmData, G4HepEmMSCTrackData* mscData,
-                                             G4double ekin, G4double range, int imc, bool iselectron);
+                                             G4double ekin, G4double range, int imc, bool iselectron, std::function<G4double(G4double)> stopgradient);
 
   G4HepEmHostDevice
   static void   ConvertGeometricToTrueLength(G4HepEmMSCTrackData* mscData, G4double range, G4double gStepToConvert);

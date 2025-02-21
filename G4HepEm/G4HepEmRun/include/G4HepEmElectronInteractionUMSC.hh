@@ -1,4 +1,6 @@
 #include "ad_type.h"
+#include <functional>
+
 #ifndef G4HepEmElectronInteractionUMSC_HH
 #define G4HepEmElectronInteractionUMSC_HH
 
@@ -29,7 +31,7 @@ public:
   G4HepEmHostDevice
   static void StepLimit(G4HepEmData* hepEmData, G4HepEmParameters* hepEmPars, G4HepEmMSCTrackData* mscData,
                         G4double ekin, int imat, G4double range, G4double presafety,
-                        bool onBoundary, bool iselectron, G4HepEmRandomEngine* rnge);
+                        bool onBoundary, bool iselectron, G4HepEmRandomEngine* rnge, std::function<G4double(G4double)> stopgradient);
 
   G4HepEmHostDevice
   static void SampleScattering(G4HepEmData* hepEmData, G4HepEmMSCTrackData* mscData, G4double pStepLength,

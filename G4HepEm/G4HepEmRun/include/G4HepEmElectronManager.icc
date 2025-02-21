@@ -1,4 +1,5 @@
 #include "ad_type.h"
+#include <functional>
 
 #include "G4HepEmElectronManager.hh"
 
@@ -135,30 +136,32 @@ void G4HepEmElectronManager::HowFarToMSC(struct G4HepEmData* hepEmData, struct G
   mscData->SetNewDirection(0., 0., 1.);
   // no msc in case of very small steps
   const G4double kGeomMinLength = 5.E-8; // 0.05 [nm]
+  bool derivativesInactive = (theEkin < 1.E-3);
+  std::function<G4double(G4double)> stopgradient = [derivativesInactive](G4double x)->G4double {if(derivativesInactive) return x.val; else return x; };
   if (pStepLength > kGeomMinLength && theEkin > 1.E-3) { //default
   //if (pStepLength > kGeomMinLength && theEkin > 10.) {
-
+    
     mscData->fIsActive = true;
     // compute the fist transport mean free path
     mscData->fLambtr1  = GetTransportMFP(theElectronData, theImat, theEkin, theLEkin); //JK This is fine
     G4HepEmElectronInteractionUMSC::StepLimit(hepEmData, hepEmPars, mscData, theEkin, theImat, range,
-                                              theTrack->GetSafety(), theTrack->GetOnBoundary(), isElectron, rnge); //JK mscData FP dotvalues can be set to zero below threshold
+                                              theTrack->GetSafety(), theTrack->GetOnBoundary(), isElectron, rnge, stopgradient); //JK mscData FP dotvalues can be set to zero below threshold
     // If msc limited the true step length, then the G4HepEmMSCTrackData::fTrueStepLength member of
     // the input electron track is < pStepLengt. Otherwise its = pStepLengt.
     // Call the True --> Geometric conversion since that might limits further the true step Length:
     //   - convert the physical step length to geometrical one. The result will be
     //     written into mscData::fZPathLength.
-    ConvertTrueToGeometricLength(hepEmData, mscData, theEkin, range, theIMC, isElectron); //JK mscData FP dotvalues can be set to zero below threshold
+    ConvertTrueToGeometricLength(hepEmData, mscData, theEkin, range, theIMC, isElectron, stopgradient); //JK mscData FP dotvalues can be set to zero below threshold
     // check now if msc limited the step:
     const G4double mscTruStepLength = mscData->fTrueStepLength; //JK dotvalue can be set to zero below threshold
     if (mscTruStepLength < pStepLength) {
       // indicate continuous step limit as msc limited the step and set the new pStepLength
       theTrack->SetWinnerProcessIndex(-2);
       pStepLength = mscTruStepLength;
-      theElTrack->SetPStepLength(pStepLength); // set to (G4double)(pStepLength.val) under condition. This sets the derivative to 0.  
+      theElTrack->SetPStepLength(stopgradient(pStepLength)); // set to (G4double)(pStepLength.val) under condition. This sets the derivative to 0.  
     }
     // set geometrical step length (protect agains wrong conversion, i.e. if gL > pL)
-    theTrack->SetGStepLength(G4HepEmMin(mscData->fZPathLength, pStepLength)); //set to (G4double)(G4HepEmMin(mscData->fZPathLength, pStepLength).val) under condition
+    theTrack->SetGStepLength(stopgradient(G4HepEmMin(mscData->fZPathLength, pStepLength))); //set to (G4double)(G4HepEmMin(mscData->fZPathLength, pStepLength).val) under condition
   }
 #endif
 }
@@ -576,7 +579,7 @@ G4double G4HepEmElectronManager::ComputeMacXsecAnnihilationForStepping(const G4d
 
 
 void G4HepEmElectronManager::ConvertTrueToGeometricLength(const G4HepEmData* hepEmData, G4HepEmMSCTrackData* mscData,
-                                                         G4double ekin, G4double range, int imc, bool iselectron) {
+                                                         G4double ekin, G4double range, int imc, bool iselectron, std::function<G4double(G4double)> stopgradient) {
   mscData->fPar1 = -1.;
   mscData->fPar2 =  0.;
   mscData->fPar3 =  0.;
@@ -584,9 +587,9 @@ void G4HepEmElectronManager::ConvertTrueToGeometricLength(const G4HepEmData* hep
   //       So this line below should never have any effects! Since this is the only part that
   //       might limits the true step length in the true --> geom conversion, we might drop this
   //       that makes possible the decision if MSC limited the step even before this conversion.
-  mscData->fTrueStepLength = G4HepEmMin(mscData->fTrueStepLength, range);
+  mscData->fTrueStepLength = stopgradient(G4HepEmMin(mscData->fTrueStepLength, range));
   //  do the true -> geom transformation
-  mscData->fZPathLength = mscData->fTrueStepLength;
+  mscData->fZPathLength = stopgradient(mscData->fTrueStepLength);
   // z = t for very small true-path-length
   const G4double kTlimitMinfix2 = 1.0E-6; // 1 [nm]
   if (mscData->fTrueStepLength < kTlimitMinfix2) {
@@ -597,19 +600,20 @@ void G4HepEmElectronManager::ConvertTrueToGeometricLength(const G4HepEmData* hep
   const G4double kDtrl      = 0.05;
   const G4double tau        = mscData->fTrueStepLength / mscData->fLambtr1;
   if (tau < kTauSmall) {
-    mscData->fZPathLength = G4HepEmMin(mscData->fTrueStepLength, mscData->fLambtr1);
+    mscData->fZPathLength = stopgradient(G4HepEmMin(mscData->fTrueStepLength, mscData->fLambtr1));
   } else if (mscData->fTrueStepLength < range * kDtrl) {
     const G4double kTauLim  = 1.0e-6;
-    mscData->fZPathLength = (tau < kTauLim)
+    mscData->fZPathLength = stopgradient((tau < kTauLim)
                             ? (G4double)(mscData->fTrueStepLength * (1. - 0.5 * tau))
-                            : (G4double)(mscData->fLambtr1 * (1. - G4HepEmExp(-tau)));
+                            : (G4double)(mscData->fLambtr1 * (1. - G4HepEmExp(-tau)))
+    );
   } else if (ekin < kElectronMassC2 || mscData->fTrueStepLength == range) {
-    mscData->fPar1        = 1. / range;
-    mscData->fPar2        = 1. / (mscData->fPar1 * mscData->fLambtr1);
-    mscData->fPar3        = 1. + mscData->fPar2;
-    mscData->fZPathLength = 1. / (mscData->fPar1 * mscData->fPar3);
+    mscData->fPar1        = stopgradient(1. / range);
+    mscData->fPar2        = stopgradient(1. / (mscData->fPar1 * mscData->fLambtr1));
+    mscData->fPar3        = stopgradient(1. + mscData->fPar2);
+    mscData->fZPathLength = stopgradient(1. / (mscData->fPar1 * mscData->fPar3));
     if (mscData->fTrueStepLength < range) {
-      mscData->fZPathLength *= (1. - G4HepEmPow(1. - mscData->fTrueStepLength/range, mscData->fPar3));
+      mscData->fZPathLength *= stopgradient(1. - G4HepEmPow(1. - mscData->fTrueStepLength/range, mscData->fPar3)); //Might be something to look at later
     }
   } else {
     const G4double rfin     = G4HepEmMax(range - mscData->fTrueStepLength, 0.01 * range);
@@ -617,12 +621,12 @@ void G4HepEmElectronManager::ConvertTrueToGeometricLength(const G4HepEmData* hep
     const G4double t1       = GetInvRange(elData, imc, rfin);
     const int    imat     = (hepEmData->fTheMatCutData->fMatCutData[imc]).fHepEmMatIndex;
     const G4double lambda1  = GetTransportMFP(elData, imat, t1, G4HepEmLog(t1));
-    mscData->fPar1        = (mscData->fLambtr1 - lambda1) / (mscData->fLambtr1 * mscData->fTrueStepLength); // alpha
-    mscData->fPar2        = 1. / (mscData->fPar1 * mscData->fLambtr1);
-    mscData->fPar3        = 1. + mscData->fPar2;
-    mscData->fZPathLength = (1. - G4HepEmPow(lambda1/mscData->fLambtr1, mscData->fPar3))/(mscData->fPar1 * mscData->fPar3);
+    mscData->fPar1        = stopgradient((mscData->fLambtr1 - lambda1) / (mscData->fLambtr1 * mscData->fTrueStepLength)); // alpha
+    mscData->fPar2        = stopgradient(1. / (mscData->fPar1 * mscData->fLambtr1));
+    mscData->fPar3        = stopgradient(1. + mscData->fPar2);
+    mscData->fZPathLength = stopgradient((1. - G4HepEmPow(lambda1/mscData->fLambtr1, mscData->fPar3))/(mscData->fPar1 * mscData->fPar3));
   }
-  mscData->fZPathLength = G4HepEmMin(mscData->fZPathLength, mscData->fLambtr1);
+  mscData->fZPathLength = stopgradient(G4HepEmMin(mscData->fZPathLength, mscData->fLambtr1));
 }
 
 
