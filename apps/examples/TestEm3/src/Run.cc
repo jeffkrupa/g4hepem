@@ -46,6 +46,7 @@
 
 #include "G4UnitsTable.hh"
 #include "G4SystemOfUnits.hh"
+#include "Randomize.hh"
 
 #include "ad_type.h"
 #ifdef DERIVGRIND_VALIDATION
@@ -368,7 +369,9 @@ void Run::EndOfRun()
   G4cout << "  #Layers   Charged-TrakL [mm]   Energy-Dep [MeV]    Mean Sq Edep       Mean EdepDiff     Mean Sq EdepDiff " << G4endl << G4endl;
   G4cout.setf(std::ios::scientific);
   G4cout.precision(6);
-  std::ofstream edeps("edeps");
+
+  G4int theSeed = G4Random::getTheSeed();
+  std::ofstream edeps("edeps_" + std::to_string(theSeed));
   for (G4int il = 0; il < nLayers; ++il)  {
       passivedouble edep_sq = fEDepSqPerLayer[il]; // mean squared edep
       passivedouble edep_d = fEDepDPerLayer[il]; // mean derivative of edep

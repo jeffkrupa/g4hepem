@@ -37,6 +37,10 @@
 #include "SteppingAction.hh"
 #include "SteppingVerbose.hh"
 
+#include "StopGradTrackingAction.hh"
+#include "StopGradSteppingAction.hh"
+
+
 //....oooOO0OOooo........oooOO0OOooo........oooOO0OOooo........oooOO0OOooo......
 
 ActionInitialization::ActionInitialization(DetectorConstruction* det, bool isperformance)
@@ -72,7 +76,11 @@ void ActionInitialization::Build() const
     SetUserAction(event);
     SetUserAction(new TrackingAction(fDetector));
     SetUserAction(new SteppingAction(fDetector,event));
+    //SetUserAction(new StopGradTrackingAction(1e-1, /*includeGammas=*/false));
+    //SetUserAction(new StopGradSteppingAction(1e-1, /*includeGammas=*/false));
+
   }
+
 }
 
 //....oooOO0OOooo........oooOO0OOooo........oooOO0OOooo........oooOO0OOooo......
