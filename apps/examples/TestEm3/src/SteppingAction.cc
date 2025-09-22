@@ -128,7 +128,7 @@ void SteppingAction::UserSteppingAction(const G4Step* aStep)
   G4Track* trk = aStep->GetTrack();
 
   // Only if the track will continue (don’t bother if it’s about to die)
-  if (trk->GetKineticEnergy() > 0.0 && trk->GetTrackStatus() == fAlive) {
+  if (trk->GetKineticEnergy() > 0.0 ) { //&& trk->GetTrackStatus() == fAlive) {
     const auto* pd = trk->GetDefinition();
     const bool isElectron = (pd == G4Electron::Definition()) || (pd == G4Positron::Definition());
     if (isElectron) {

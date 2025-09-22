@@ -4,8 +4,6 @@
 // include the G4HepEmProcess from the G4HepEm lib.
 #include "G4HepEmProcess.hh"
 
-#include "G4StopGradAlong.hh"             
-
 
 #include "G4ParticleDefinition.hh"
 #include "G4ProcessManager.hh"
