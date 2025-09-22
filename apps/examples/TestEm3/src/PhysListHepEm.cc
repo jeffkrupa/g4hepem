@@ -4,8 +4,6 @@
 // include the G4HepEmProcess from the G4HepEm lib.
 #include "G4HepEmProcess.hh"
 
-#include "G4StopGradAlong.hh"             
-
 
 #include "G4ParticleDefinition.hh"
 #include "G4ProcessManager.hh"
@@ -27,45 +25,6 @@ PhysListHepEm::PhysListHepEm(const G4String& name)
 
 
 PhysListHepEm::~PhysListHepEm() {}
-/*
-void PhysListHepEm::ConstructProcess() {
-  G4PhysicsListHelper* ph = G4PhysicsListHelper::GetPhysicsListHelper();
-
-  // Single HepEm process shared across e-/e+/gamma
-  G4HepEmProcess* hepEmProcess = new G4HepEmProcess();
-
-  auto aParticleIterator = GetParticleIterator();
-  aParticleIterator->reset();
-  while ((*aParticleIterator)()) {
-    G4ParticleDefinition* particle = aParticleIterator->value();
-    const G4String& particleName = particle->GetParticleName();
-    G4ProcessManager* pm = particle->GetProcessManager();
-
-    if (particleName == "gamma") {
-      pm->AddProcess(hepEmProcess, -1, -1, 1);
-
-      // If you also want the fix for gammas, set includeGammas=true
-      // auto* fixG = new G4StopGradAlong("StopGradAlong", 1e-1, true);
-      // pm->AddProcess(fixG, -1, 1, -1);
-      // pm->SetProcessOrderingToFirst(fixG, idxAlongStep);
-
-    } else if (particleName == "e-") {
-      pm->AddProcess(hepEmProcess, -1, -1, 1);
-
-      auto* fixE = new G4StopGradAlong("StopGradAlong", 1e-1, false);
-      pm->AddProcess(fixE, -1, 1, -1);                 // Along-step slot
-      pm->SetProcessOrderingToFirst(fixE, idxAlongStep); // Make it FIRST
-
-    } else if (particleName == "e+") {
-      pm->AddProcess(hepEmProcess, -1, -1, 1);
-
-      auto* fixP = new G4StopGradAlong("StopGradAlong", 1e-1, false);
-      pm->AddProcess(fixP, -1, 1, -1);
-      pm->SetProcessOrderingToFirst(fixP, idxAlongStep);
-    }
-  }
-}
-*/
 
 void PhysListHepEm::ConstructProcess() {
   G4PhysicsListHelper* ph = G4PhysicsListHelper::GetPhysicsListHelper();
