@@ -59,24 +59,6 @@ namespace {
 void TrackingAction::PreUserTrackingAction(const G4Track* track )
 {
 
-  // cast away const to update the track (Geant4 pattern)
-  auto* trk = const_cast<G4Track*>(track);
-
-  const auto* pd = trk->GetDefinition();
-  const bool isElectron = (pd == G4Electron::Definition()) || (pd == G4Positron::Definition());
-
-  if (isElectron) {
-    const auto& dir = trk->GetMomentumDirection(); // already unit; doubles at this point
-    if (dir.x() < 1e-1) { // <-- your threshold
-      const auto& pos = trk->GetPosition();
-      // copy SAME numeric values, just “detached” for AD types
-      const G4ThreeVector detDir(primal(dir.x()), primal(dir.y()), primal(dir.z()));
-      const G4ThreeVector detPos(primal(pos.x()), primal(pos.y()), primal(pos.z()));
-      // no renormalization, no math
-      trk->SetMomentumDirection(detDir);
-      trk->SetPosition(detPos);
-    }
-  }
 
   //get Run
   Run* run = static_cast<Run*>(

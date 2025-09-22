@@ -125,25 +125,6 @@ void SteppingAction::UserSteppingAction(const G4Step* aStep)
     else                          run->SumEnergyFlow(plane=Idnow,  -Eflow);    
   }   
 
-  G4Track* trk = aStep->GetTrack();
-
-  // Only if the track will continue (don’t bother if it’s about to die)
-  if (trk->GetKineticEnergy() > 0.0 && trk->GetTrackStatus() == fAlive) {
-    const auto* pd = trk->GetDefinition();
-    const bool isElectron = (pd == G4Electron::Definition()) || (pd == G4Positron::Definition());
-    if (isElectron) {
-      // Check the direction *now*; we seed the next step with detached values.
-      const auto& dir = trk->GetMomentumDirection(); // already unit; doubles here
-      if (dir.x() < 1e-1) {                          // your threshold
-        const auto& pos = trk->GetPosition();
-        // Copy the exact same numeric values back (no renormalization, no math)
-        const G4ThreeVector detDir(primal(dir.x()), primal(dir.y()), primal(dir.z()));
-        const G4ThreeVector detPos(primal(pos.x()), primal(pos.y()), primal(pos.z()));
-        trk->SetMomentumDirection(detDir);
-        trk->SetPosition(detPos);
-      }
-    }
-  }
 
 ////  example of Birk attenuation
 ///G4double destep   = aStep->GetTotalEnergyDeposit();
