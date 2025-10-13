@@ -5,13 +5,6 @@
 
 #include "G4HepEmMacros.hh"
 
-template<typename Expr>
-inline G4double stop_grad(const Expr& x) {
-  return G4double(GET_VALUE(x));
-
-}
-
-
 // Roate the direction [u,v,w] given in the scattering frame to the lab frame.
 // Details: scattering is described relative to the [0,0,1] direction (i.e. scattering
 // frame). Therefore, after the new direction is computed relative to this [0,0,1]
