@@ -70,6 +70,10 @@ public:
   G4HepEmHostDevice
   void DiscardGauss() { fIsGauss = false; }
 
+  void SaveStateToFile(const std::string& path);
+  void LoadStateFromFile(const std::string& path);
+  void Seed(uint64_t seed);
+
 
   G4HepEmHostDevice
   int Poisson(G4double mean) {
