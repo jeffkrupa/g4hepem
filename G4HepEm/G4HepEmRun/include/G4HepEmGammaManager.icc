@@ -25,7 +25,7 @@
 
 // Note: pStepLength will be set here i.e. this is the first access to it that
 //       will clear the previous step value.
-void G4HepEmGammaManager::HowFar(struct G4HepEmData* hepEmData, struct G4HepEmParameters* hepEmPars, G4HepEmTLData* tlData) {
+void G4HepEmGammaManager::HowFar(struct G4HepEmData* hepEmData, struct G4HepEmParameters* hepEmPars, G4HepEmTLData* tlData, int numStep) {
   G4HepEmGammaTrack* theGammaTrack = tlData->GetPrimaryGammaTrack();
   G4HepEmTrack* theTrack = theGammaTrack->GetTrack();
   // Sample the `number-of-interaction-left`
@@ -34,11 +34,11 @@ void G4HepEmGammaManager::HowFar(struct G4HepEmData* hepEmData, struct G4HepEmPa
       theTrack->SetNumIALeft(-G4HepEmLog(tlData->GetRNGEngine()->flat()), ip);
     }
   }
-  HowFar(hepEmData, hepEmPars, theGammaTrack);
+  HowFar(hepEmData, hepEmPars, theGammaTrack, numStep);
 }
 
 
-void G4HepEmGammaManager::HowFar(struct G4HepEmData* hepEmData, struct G4HepEmParameters* /*hepEmPars*/, G4HepEmGammaTrack* theGammaTrack) {
+void G4HepEmGammaManager::HowFar(struct G4HepEmData* hepEmData, struct G4HepEmParameters* /*hepEmPars*/, G4HepEmGammaTrack* theGammaTrack, int numStep) {
   G4HepEmTrack* theTrack = theGammaTrack->GetTrack();
   const G4double   theEkin = theTrack->GetEKin();
   const G4double  theLEkin = theTrack->GetLogEKin();
@@ -139,9 +139,9 @@ G4double  G4HepEmGammaManager::GetMacXSec(const struct G4HepEmGammaData* gmData,
     case 1: { // Compton
               const G4double  mxsec = GetSplineLog(numCompData, gmData->fCompEnergyGrid, &(gmData->fConvCompMacXsecData[iStart+2*numConvData]) , ekin, lekin, gmData->fCompLogMinEkin, gmData->fCompEILDelta);
               return G4HepEmMax(0.0, mxsec);
-            }
+    }
     default:
-            return 0.0;
+      return 0.0;
   }
 }
 

@@ -30,10 +30,10 @@ private:
 
 public:
   // step length
-  static void HowFar(struct G4HepEmData* /*hepEmData*/, struct G4HepEmParameters* /*hepEmPars*/, G4HepEmTLData* /*tlData*/);
+  static void HowFar(struct G4HepEmData* /*hepEmData*/, struct G4HepEmParameters* /*hepEmPars*/, G4HepEmTLData* /*tlData*/, int numStep);
 
   G4HepEmHostDevice
-  static void HowFar(struct G4HepEmData* hepEmData, struct G4HepEmParameters* hepEmPars, G4HepEmGammaTrack* theTrack);
+  static void HowFar(struct G4HepEmData* hepEmData, struct G4HepEmParameters* hepEmPars, G4HepEmGammaTrack* theTrack, int numStep);
 
 
   // interactions
@@ -41,11 +41,11 @@ public:
 
   G4HepEmHostDevice
   static void UpdateNumIALeft(G4HepEmTrack* theTrack);
-
+  
 
   G4HepEmHostDevice
   static G4double GetMacXSec(const struct G4HepEmGammaData* gmData, const int imat, const G4double ekin,
-                           const G4double lekin, const int iprocess);
+                            const G4double lekin, const int iprocess);
 
   G4HepEmHostDevice
   static G4double GetMacXSecPE(const struct G4HepEmData* hepEmData, const int imat, const G4double ekin);
