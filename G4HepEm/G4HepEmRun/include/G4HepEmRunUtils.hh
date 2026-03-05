@@ -23,6 +23,15 @@ void RotateToReferenceFrame(G4double &u, G4double &v, G4double &w, const G4doubl
 G4HepEmHostDevice
 void RotateToReferenceFrame(G4double* dir, const G4double* refDir);
 
+/** Configure derivative-only floor for the transverse norm used in RotateToReferenceFrame.
+  *
+  * When > 0, denominators based on `up = sqrt(refDir_x^2 + refDir_y^2)` use this
+  * floor only in derivative coefficients while preserving the primal value.
+  *
+  * @param upFloor dimensionless floor (0 disables)
+  */
+void ConfigureRotateUpDerivativeFloor(G4double upFloor);
+
 // get spline interpolation of y(x) between (x1, x2) given y_N = y(x_N), y''N(x_N) 
 G4HepEmHostDevice
 G4double GetSpline(G4double x1, G4double x2, G4double y1, G4double y2, G4double secderiv1, G4double secderiv2, G4double x);

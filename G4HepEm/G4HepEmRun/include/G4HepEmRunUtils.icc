@@ -7,6 +7,43 @@
 #include <cmath>
 #include <algorithm>
 
+namespace {
+
+G4double& RotateUpDerivativeFloor() {
+  static G4double floor = static_cast<G4double>(0.0);
+  return floor;
+}
+
+inline G4double RotateSignedFloorFromValue(const G4double& val, const G4double& floor) {
+  if (!(GET_VALUE(floor) > 0.0)) {
+    return val;
+  }
+  const double absVal = std::abs(GET_VALUE(val));
+  if (absVal >= GET_VALUE(floor)) {
+    return val;
+  }
+  return GET_VALUE(val) < 0.0 ? -floor : floor;
+}
+
+inline G4double RotateRegularizedRatioKeepPrimal(const G4double& num, const G4double& den, const G4double& denFloor) {
+  if (!(GET_VALUE(denFloor) > 0.0)) {
+    return num / den;
+  }
+  const G4double numVal = stop_grad(num);
+  const G4double denVal = stop_grad(den);
+  const G4double denReg = RotateSignedFloorFromValue(denVal, denFloor);
+  const G4double primal = stop_grad(numVal / denVal);
+  const G4double dfdn = stop_grad(1.0 / denReg);
+  const G4double dfdd = stop_grad(-numVal / (denReg * denReg));
+  return primal + (num - numVal) * dfdn + (den - denVal) * dfdd;
+}
+
+}  // namespace
+
+void ConfigureRotateUpDerivativeFloor(G4double upFloor) {
+  RotateUpDerivativeFloor() = GET_VALUE(upFloor) > 0.0 ? upFloor : static_cast<G4double>(0.0);
+}
+
 
 // Roate the direction [u,v,w] given in the scattering frame to the lab frame.
 // Details: scattering is described relative to the [0,0,1] direction (i.e. scattering
@@ -18,11 +55,12 @@ void RotateToReferenceFrame(G4double &u, G4double &v, G4double &w, const G4doubl
   G4double up = refDir[0]*refDir[0] + refDir[1]*refDir[1];
   if (up>0.) {
     up = std::sqrt(up);
+    const G4double upFloor = RotateUpDerivativeFloor();
     const G4double px = u;
     const G4double py = v;
     const G4double pz = w;
-    u = (refDir[0]*refDir[2]*px - refDir[1]*py)/up + refDir[0]*pz;
-    v = (refDir[1]*refDir[2]*px + refDir[0]*py)/up + refDir[1]*pz;
+    u = RotateRegularizedRatioKeepPrimal(refDir[0]*refDir[2]*px - refDir[1]*py, up, upFloor) + refDir[0]*pz;
+    v = RotateRegularizedRatioKeepPrimal(refDir[1]*refDir[2]*px + refDir[0]*py, up, upFloor) + refDir[1]*pz;
     w =    -up*px +             refDir[2]*pz;
   } else if (refDir[2]<0.) {       // phi=0  teta=pi
     u = -u;
@@ -34,11 +72,12 @@ void RotateToReferenceFrame(G4double* dir, const G4double* refDir) {
   G4double up = refDir[0]*refDir[0] + refDir[1]*refDir[1];
   if (up>0.) {
     up = std::sqrt(up);
+    const G4double upFloor = RotateUpDerivativeFloor();
     const G4double px = dir[0];
     const G4double py = dir[1];
     const G4double pz = dir[2];
-    dir[0] = (refDir[0]*refDir[2]*px - refDir[1]*py)/up + refDir[0]*pz;
-    dir[1] = (refDir[1]*refDir[2]*px + refDir[0]*py)/up + refDir[1]*pz;
+    dir[0] = RotateRegularizedRatioKeepPrimal(refDir[0]*refDir[2]*px - refDir[1]*py, up, upFloor) + refDir[0]*pz;
+    dir[1] = RotateRegularizedRatioKeepPrimal(refDir[1]*refDir[2]*px + refDir[0]*py, up, upFloor) + refDir[1]*pz;
     dir[2] =    -up*px +             refDir[2]*pz;
   } else if (refDir[2]<0.) {       // phi=0  teta=pi
     dir[0] = -dir[0];

@@ -141,6 +141,24 @@ public:
   G4HepEmHostDevice
   static void UpdateNumIALeft(G4HepEmElectronTrack* theElTrack);
 
+  /** Configure derivative regularization for UpdateNumIALeft.
+    *
+    * When > 0, the derivative of pStepLength/mfp is evaluated with a floor on mfp
+    * while keeping the primal update unchanged.
+    *
+    * @param mfpFloor floor [mm] used only in derivative evaluation (0 disables)
+    */
+  static void ConfigureNumIALeftDerivativeRegularization(G4double mfpFloor);
+
+  /** Configure derivative-only regularization for MSC true/geom conversion formulas.
+    *
+    * When > 0, denominators and near-singular terms in conversion equations use
+    * this epsilon in derivative coefficients while preserving primal values.
+    *
+    * @param epsilon dimensionless floor used in conversion derivative evaluation (0 disables)
+    */
+  static void ConfigureConversionDerivativeRegularization(G4double epsilon);
+
   /** Apply the mean energy loss along the physical step length.
     *
     * @param hepEmData pointer to the top level, global, G4HepEmData structure.

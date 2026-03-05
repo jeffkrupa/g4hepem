@@ -23,6 +23,51 @@
 
 #include <iostream>
 
+namespace {
+G4double& GammaNumIALeftDerivativeMfpFloor() {
+  static G4double floor = static_cast<G4double>(0.0);
+  return floor;
+}
+
+G4double& GammaPhotoelectricInvEDerivativeEkinFloor() {
+  static G4double floor = static_cast<G4double>(0.0);
+  return floor;
+}
+
+inline G4double GammaStopGrad(const G4double& x) {
+  return static_cast<G4double>(GET_VALUE(x));
+}
+
+inline G4double GammaPositiveFloorFromValue(const G4double& val, const G4double& floor) {
+  if (!(GET_VALUE(floor) > 0.0)) {
+    return val;
+  }
+  return GET_VALUE(val) > GET_VALUE(floor) ? val : floor;
+}
+
+inline G4double GammaRegularizedRatioKeepPrimal(const G4double& num, const G4double& den, const G4double& denFloor) {
+  if (!(GET_VALUE(denFloor) > 0.0)) {
+    return num / den;
+  }
+  const G4double numVal = GammaStopGrad(num);
+  const G4double denVal = GammaStopGrad(den);
+  const G4double denReg = GammaPositiveFloorFromValue(denVal, denFloor);
+  const G4double primal = GammaStopGrad(num / den);
+  const G4double dfdn = GammaStopGrad(1.0 / denReg);
+  const G4double dfdd = GammaStopGrad(-numVal / (denReg * denReg));
+  const G4double corr = (num - numVal) * dfdn + (den - denVal) * dfdd;
+  return primal + (corr - GammaStopGrad(corr));
+}
+
+inline G4double GammaRegularizedNumIADecrement(const G4double& pStepLength, const G4double& preStepMFP) {
+  return GammaRegularizedRatioKeepPrimal(pStepLength, preStepMFP, GammaNumIALeftDerivativeMfpFloor());
+}
+
+inline G4double GammaRegularizedInvEKeepPrimal(const G4double& ekin) {
+  return GammaRegularizedRatioKeepPrimal(1.0, ekin, GammaPhotoelectricInvEDerivativeEkinFloor());
+}
+}  // namespace
+
 // Note: pStepLength will be set here i.e. this is the first access to it that
 //       will clear the previous step value.
 void G4HepEmGammaManager::HowFar(struct G4HepEmData* hepEmData, struct G4HepEmParameters* hepEmPars, G4HepEmTLData* tlData, int numStep) {
@@ -119,9 +164,17 @@ void   G4HepEmGammaManager::UpdateNumIALeft(G4HepEmTrack* theTrack) {
   const G4double pStepLength = theTrack->GetGStepLength();
   G4double*    numInterALeft = theTrack->GetNumIALeft();
   G4double*       preStepMFP = theTrack->GetMFP();
-  numInterALeft[0] -= pStepLength/preStepMFP[0];
-  numInterALeft[1] -= pStepLength/preStepMFP[1];
-  numInterALeft[2] -= pStepLength/preStepMFP[2];
+  numInterALeft[0] -= GammaRegularizedNumIADecrement(pStepLength, preStepMFP[0]);
+  numInterALeft[1] -= GammaRegularizedNumIADecrement(pStepLength, preStepMFP[1]);
+  numInterALeft[2] -= GammaRegularizedNumIADecrement(pStepLength, preStepMFP[2]);
+}
+
+void G4HepEmGammaManager::ConfigureNumIALeftDerivativeRegularization(G4double mfpFloor) {
+  GammaNumIALeftDerivativeMfpFloor() = GET_VALUE(mfpFloor) > 0.0 ? mfpFloor : static_cast<G4double>(0.0);
+}
+
+void G4HepEmGammaManager::ConfigurePhotoelectricDerivativeRegularization(G4double ekinFloor) {
+  GammaPhotoelectricInvEDerivativeEkinFloor() = GET_VALUE(ekinFloor) > 0.0 ? ekinFloor : static_cast<G4double>(0.0);
 }
 
 
@@ -158,6 +211,6 @@ G4double G4HepEmGammaManager::GetMacXSecPE(const struct G4HepEmData* hepEmData, 
     }
   }
   const G4double* sandiaCof = &matData->fSandiaCoefficients[4 * interval];
-  const G4double inv = 1 / ekin;
+  const G4double inv = GammaRegularizedInvEKeepPrimal(ekin);
   return inv * (sandiaCof[0] + inv * (sandiaCof[1] + inv * (sandiaCof[2] + inv * sandiaCof[3])));
 }

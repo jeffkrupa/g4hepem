@@ -41,6 +41,20 @@ public:
 
   G4HepEmHostDevice
   static void UpdateNumIALeft(G4HepEmTrack* theTrack);
+
+  /** Configure derivative-only regularization for gamma UpdateNumIALeft.
+    *
+    * @param mfpFloor denominator floor [mm] used only in derivative coefficients.
+    *                 Set to 0 to disable regularization.
+    */
+  static void ConfigureNumIALeftDerivativeRegularization(G4double mfpFloor);
+
+  /** Configure derivative-only regularization for gamma photoelectric 1/E terms.
+    *
+    * @param ekinFloor denominator floor [MeV] used only in derivative coefficients
+    *                  of 1/ekin in GetMacXSecPE. Set to 0 to disable.
+    */
+  static void ConfigurePhotoelectricDerivativeRegularization(G4double ekinFloor);
   
 
   G4HepEmHostDevice

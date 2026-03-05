@@ -26,6 +26,34 @@ private:
 
 public:
 
+  /** Enable/disable Gaussian randomization in the UMSC step-limit selection. */
+  static void ConfigureStepRandomization(bool enable);
+
+  /** Configure derivative-only regularization knobs for UMSC sensitive formulas.
+   *
+   * All values are non-negative; 0 disables the corresponding regularization.
+   *
+   * @param cosThetaDenFloor floor used in denominator-sensitive ratios in SampleCosineTheta
+   * @param tauBlendEpsilon  smoothing width for the tau branch around |deltaR1mfp| ~ 0.01*preStepTr1mfp
+   * @param simpleDenFloor   floor used for SimpleScattering denominator (dum1)
+   * @param dispRadFloor     floor used in derivative of displacement radicand sqrt((p-z)*(p+z))
+   */
+  static void ConfigureDerivativeRegularization(G4double cosThetaDenFloor,
+                                                G4double tauBlendEpsilon,
+                                                G4double simpleDenFloor,
+                                                G4double dispRadFloor);
+
+  /** Query if Gaussian randomization is enabled in UMSC step-limit selection. */
+  static bool IsStepRandomizationEnabled();
+
+  /** Set/clear per-track debug context used by internal UMSC instrumentation. */
+  static void SetDebugContext(int trackID, int parentID, int stepIdx, int winnerIdx, bool onBoundary);
+  static void ClearDebugContext();
+
+  /** Log pre/post rotation vectors around RotateToReferenceFrame in SampleMSC. */
+  static void LogRotationDebug(const char* stage, const G4double* vecBefore, const G4double* vecAfter,
+                               const G4double* refDir, G4double up);
+
   G4HepEmHostDevice
   static void StepLimit(G4HepEmData* hepEmData, G4HepEmParameters* hepEmPars, G4HepEmMSCTrackData* mscData,
                         G4double ekin, int imat, G4double range, G4double presafety,

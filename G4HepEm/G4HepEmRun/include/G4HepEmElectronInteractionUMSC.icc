@@ -13,6 +13,342 @@
 
 #include "G4HepEmMaterialData.hh"
 
+#include <cstdlib>
+#include <fstream>
+#include <limits>
+#include <mutex>
+
+namespace {
+  bool gUseUmscStepRandomization = true;
+
+  G4double& UMSCCosThetaDenFloor() {
+    static G4double floor = static_cast<G4double>(0.0);
+    return floor;
+  }
+
+  G4double& UMSCTauBlendEpsilon() {
+    static G4double eps = static_cast<G4double>(0.0);
+    return eps;
+  }
+
+  G4double& UMSCSimpleDenFloor() {
+    static G4double floor = static_cast<G4double>(0.0);
+    return floor;
+  }
+
+  G4double& UMSCDispRadFloor() {
+    static G4double floor = static_cast<G4double>(0.0);
+    return floor;
+  }
+
+  inline G4double UMSCStopGrad(const G4double& x) {
+    return G4double(GET_VALUE(x));
+  }
+
+  inline G4double UMSCSignedFloorFromValue(const G4double& val, const G4double& floor) {
+    if (!(GET_VALUE(floor) > 0.0)) {
+      return val;
+    }
+    const double absVal = std::abs(GET_VALUE(val));
+    if (absVal >= GET_VALUE(floor)) {
+      return val;
+    }
+    return GET_VALUE(val) < 0.0 ? -floor : floor;
+  }
+
+  inline G4double UMSCPositiveFloorFromValue(const G4double& val, const G4double& floor) {
+    if (!(GET_VALUE(floor) > 0.0)) {
+      return val;
+    }
+    return GET_VALUE(val) > GET_VALUE(floor) ? val : floor;
+  }
+
+  inline G4double UMSCRegularizedRatioKeepPrimal(const G4double& num, const G4double& den, const G4double& denFloor) {
+    if (!(GET_VALUE(denFloor) > 0.0)) {
+      return num / den;
+    }
+    const G4double numVal = UMSCStopGrad(num);
+    const G4double denVal = UMSCStopGrad(den);
+    const G4double denReg = UMSCSignedFloorFromValue(denVal, denFloor);
+    const G4double primal = UMSCStopGrad(num / den);
+    const G4double dfdn   = UMSCStopGrad(1.0 / denReg);
+    const G4double dfdd   = UMSCStopGrad(-numVal / (denReg * denReg));
+    const G4double corr   = (num - numVal) * dfdn + (den - denVal) * dfdd;
+    return primal + (corr - UMSCStopGrad(corr));
+  }
+
+  inline G4double UMSCRegularizedSqrtKeepPrimal(const G4double& x, const G4double& floor) {
+    if (!(GET_VALUE(floor) > 0.0)) {
+      return std::sqrt(x);
+    }
+    const G4double xVal = UMSCStopGrad(x);
+    const G4double xPos = GET_VALUE(xVal) > 0.0 ? xVal : static_cast<G4double>(0.0);
+    const G4double primal = UMSCStopGrad(std::sqrt(xPos));
+    const G4double xReg = UMSCPositiveFloorFromValue(xPos, floor);
+    const G4double dfdx = UMSCStopGrad(0.5 / std::sqrt(xReg));
+    const G4double corr = (x - xVal) * dfdx;
+    return primal + (corr - UMSCStopGrad(corr));
+  }
+
+  inline G4double UMSCRegularizedPowKeepPrimal(const G4double& base, const G4double& exponent, const G4double& baseFloor) {
+    if (!(GET_VALUE(baseFloor) > 0.0)) {
+      return G4HepEmPow(base, exponent);
+    }
+    const G4double baseVal = UMSCStopGrad(base);
+    const G4double expVal  = UMSCStopGrad(exponent);
+    const G4double basePos = GET_VALUE(baseVal) > 0.0 ? baseVal : static_cast<G4double>(0.0);
+    const G4double baseReg = UMSCPositiveFloorFromValue(basePos, baseFloor);
+    const G4double primal  = UMSCStopGrad(G4HepEmPow(base, exponent));
+    const G4double dfdBase = UMSCStopGrad(expVal * G4HepEmPow(baseReg, expVal - 1.0));
+    const G4double dfdExp  = UMSCStopGrad(primal * G4HepEmLog(baseReg));
+    const G4double corr    = (base - baseVal) * dfdBase + (exponent - expVal) * dfdExp;
+    return primal + (corr - UMSCStopGrad(corr));
+  }
+
+  inline G4double UMSCRegularizedTauKeepPrimal(
+      const G4double& pStepLength,
+      const G4double& preStepTr1mfp,
+      const G4double& postStepTr1mfp,
+      const G4double& denFloor,
+      const G4double& blendEps) {
+    const G4double deltaR1mfp = preStepTr1mfp - postStepTr1mfp;
+    const G4double tauLog = pStepLength * UMSCRegularizedRatioKeepPrimal(
+        G4HepEmLog(preStepTr1mfp / postStepTr1mfp), deltaR1mfp, denFloor);
+    const G4double tauLin = UMSCRegularizedRatioKeepPrimal(pStepLength, preStepTr1mfp, denFloor);
+
+    const G4double margin = static_cast<G4double>(std::abs(GET_VALUE(deltaR1mfp))) - static_cast<G4double>(0.01) * preStepTr1mfp;
+    if (!(GET_VALUE(blendEps) > 0.0)) {
+      return GET_VALUE(margin) > 0.0 ? tauLog : tauLin;
+    }
+
+    const G4double marginAbs = static_cast<G4double>(std::abs(GET_VALUE(margin)));
+    if (GET_VALUE(marginAbs) >= GET_VALUE(blendEps)) {
+      return GET_VALUE(margin) > 0.0 ? tauLog : tauLin;
+    }
+
+    const double t01 = (GET_VALUE(margin) + GET_VALUE(blendEps)) / (2.0 * GET_VALUE(blendEps));
+    const double w01 = t01 * t01 * (3.0 - 2.0 * t01); // smoothstep in [0,1]
+    const G4double w = static_cast<G4double>(w01);
+    const G4double tauBlend = w * tauLog + (1.0 - w) * tauLin;
+    const G4double tauPrimal = GET_VALUE(margin) > 0.0 ? UMSCStopGrad(tauLog) : UMSCStopGrad(tauLin);
+    const G4double tauBlendPrimal = UMSCStopGrad(tauBlend);
+    return tauPrimal + (tauBlend - tauBlendPrimal);
+  }
+
+  struct UMSCDebugContext {
+    bool active = false;
+    int trackID = -1;
+    int parentID = -1;
+    int stepIdx = -1;
+    int winnerIdx = -1;
+    bool onBoundary = false;
+  };
+
+  UMSCDebugContext& GetUMSCDebugContext() {
+    static thread_local UMSCDebugContext ctx;
+    return ctx;
+  }
+
+  int UMSCReadEnvInt(const char* key, int defaultValue) {
+    const char* raw = std::getenv(key);
+    if (raw == nullptr || *raw == '\0') {
+      return defaultValue;
+    }
+    char* endPtr = nullptr;
+    const long parsed = std::strtol(raw, &endPtr, 10);
+    if (endPtr == raw) {
+      return defaultValue;
+    }
+    return static_cast<int>(parsed);
+  }
+
+  const char* UMSCReadEnvStr(const char* key, const char* defaultValue) {
+    const char* raw = std::getenv(key);
+    if (raw == nullptr || *raw == '\0') {
+      return defaultValue;
+    }
+    return raw;
+  }
+
+  int UMSCDebugTrackId() {
+    static const int kTrackId = UMSCReadEnvInt("HEPEMSHOW_DEBUG_TRACK_ID", -1);
+    return kTrackId;
+  }
+
+  bool IsUMSCDebugEnabled() {
+    static const int kEnabled = UMSCReadEnvInt("HEPEMSHOW_ENABLE_DEBUG_LOGS", 0);
+    return kEnabled != 0;
+  }
+
+  bool ShouldLogUMSC() {
+    if (!IsUMSCDebugEnabled()) {
+      return false;
+    }
+    const UMSCDebugContext& ctx = GetUMSCDebugContext();
+    const int targetTrackID = UMSCDebugTrackId();
+    return ctx.active && targetTrackID >= 0 && ctx.trackID == targetTrackID;
+  }
+
+  inline double UMSCValue(const G4double& v) {
+    return static_cast<double>(GET_VALUE(v));
+  }
+
+#if defined(CODI_FORWARD)
+  inline double UMSCDot(const G4double& v) {
+    return static_cast<double>(GET_DOTVALUE(v));
+  }
+#else
+  inline double UMSCDot(const G4double&) {
+    return 0.0;
+  }
+#endif
+
+  G4double UMSCDebugNaN() {
+    return static_cast<G4double>(std::numeric_limits<double>::quiet_NaN());
+  }
+
+  std::mutex& UMSCDebugMutex() {
+    static std::mutex mtx;
+    return mtx;
+  }
+
+  std::ofstream& UMSCDebugStream() {
+    static std::ofstream out;
+    static bool initialised = false;
+    if (!initialised) {
+      const char* filePath = UMSCReadEnvStr("HEPEMSHOW_UMSC_DEBUG_FILE", "umsc_debug.csv");
+      out.open(filePath, std::ios::out | std::ios::trunc);
+      if (out.good()) {
+        out << "trackID,parentID,stepIdx,winnerIdx,onBoundary,stage,reason,"
+            << "pStepLength,pStepLength_dot,"
+            << "preStepEkin,preStepEkin_dot,"
+            << "postStepEkin,postStepEkin_dot,"
+            << "preStepTr1mfp,preStepTr1mfp_dot,"
+            << "postStepTr1mfp,postStepTr1mfp_dot,"
+            << "umscTlimitMin,umscTlimitMin_dot,"
+            << "radLength,radLength_dot,"
+            << "tau,tau_dot,"
+            << "theta0,theta0_dot,"
+            << "cost,cost_dot,"
+            << "qprb,qprb_dot,"
+            << "prob,prob_dot,"
+            << "dirBeforeX,dirBeforeX_dot,dirBeforeY,dirBeforeY_dot,dirBeforeZ,dirBeforeZ_dot,"
+            << "dirAfterX,dirAfterX_dot,dirAfterY,dirAfterY_dot,dirAfterZ,dirAfterZ_dot,"
+            << "refDirX,refDirX_dot,refDirY,refDirY_dot,refDirZ,refDirZ_dot,"
+            << "up,up_dot,returnFlag\n";
+        out.setf(std::ios::scientific);
+      }
+      initialised = true;
+    }
+    return out;
+  }
+
+  void LogUMSCStage(
+      const char* stage, const char* reason,
+      const G4double& pStepLength, const G4double& preStepEkin, const G4double& postStepEkin,
+      const G4double& preStepTr1mfp, const G4double& postStepTr1mfp,
+      const G4double& umscTlimitMin, const G4double& radLength,
+      const G4double& tau, const G4double& theta0, const G4double& cost,
+      const G4double& qprb, const G4double& prob,
+      const G4double* dirBefore, const G4double* dirAfter, const G4double* refDir,
+      const G4double& up, int returnFlag) {
+    if (!ShouldLogUMSC()) {
+      return;
+    }
+    std::ofstream& out = UMSCDebugStream();
+    if (!out.good()) {
+      return;
+    }
+    const UMSCDebugContext& ctx = GetUMSCDebugContext();
+    const G4double nan = UMSCDebugNaN();
+    const G4double beforeX = dirBefore == nullptr ? nan : dirBefore[0];
+    const G4double beforeY = dirBefore == nullptr ? nan : dirBefore[1];
+    const G4double beforeZ = dirBefore == nullptr ? nan : dirBefore[2];
+    const G4double afterX = dirAfter == nullptr ? nan : dirAfter[0];
+    const G4double afterY = dirAfter == nullptr ? nan : dirAfter[1];
+    const G4double afterZ = dirAfter == nullptr ? nan : dirAfter[2];
+    const G4double refX = refDir == nullptr ? nan : refDir[0];
+    const G4double refY = refDir == nullptr ? nan : refDir[1];
+    const G4double refZ = refDir == nullptr ? nan : refDir[2];
+
+    std::lock_guard<std::mutex> lock(UMSCDebugMutex());
+    out
+      << ctx.trackID << ','
+      << ctx.parentID << ','
+      << ctx.stepIdx << ','
+      << ctx.winnerIdx << ','
+      << ctx.onBoundary << ','
+      << stage << ','
+      << reason << ','
+      << UMSCValue(pStepLength) << ',' << UMSCDot(pStepLength) << ','
+      << UMSCValue(preStepEkin) << ',' << UMSCDot(preStepEkin) << ','
+      << UMSCValue(postStepEkin) << ',' << UMSCDot(postStepEkin) << ','
+      << UMSCValue(preStepTr1mfp) << ',' << UMSCDot(preStepTr1mfp) << ','
+      << UMSCValue(postStepTr1mfp) << ',' << UMSCDot(postStepTr1mfp) << ','
+      << UMSCValue(umscTlimitMin) << ',' << UMSCDot(umscTlimitMin) << ','
+      << UMSCValue(radLength) << ',' << UMSCDot(radLength) << ','
+      << UMSCValue(tau) << ',' << UMSCDot(tau) << ','
+      << UMSCValue(theta0) << ',' << UMSCDot(theta0) << ','
+      << UMSCValue(cost) << ',' << UMSCDot(cost) << ','
+      << UMSCValue(qprb) << ',' << UMSCDot(qprb) << ','
+      << UMSCValue(prob) << ',' << UMSCDot(prob) << ','
+      << UMSCValue(beforeX) << ',' << UMSCDot(beforeX) << ','
+      << UMSCValue(beforeY) << ',' << UMSCDot(beforeY) << ','
+      << UMSCValue(beforeZ) << ',' << UMSCDot(beforeZ) << ','
+      << UMSCValue(afterX) << ',' << UMSCDot(afterX) << ','
+      << UMSCValue(afterY) << ',' << UMSCDot(afterY) << ','
+      << UMSCValue(afterZ) << ',' << UMSCDot(afterZ) << ','
+      << UMSCValue(refX) << ',' << UMSCDot(refX) << ','
+      << UMSCValue(refY) << ',' << UMSCDot(refY) << ','
+      << UMSCValue(refZ) << ',' << UMSCDot(refZ) << ','
+      << UMSCValue(up) << ',' << UMSCDot(up) << ','
+      << returnFlag
+      << '\n';
+    out.flush();
+  }
+}
+
+void G4HepEmElectronInteractionUMSC::ConfigureStepRandomization(bool enable) {
+  gUseUmscStepRandomization = enable;
+}
+
+void G4HepEmElectronInteractionUMSC::ConfigureDerivativeRegularization(
+    G4double cosThetaDenFloor, G4double tauBlendEpsilon, G4double simpleDenFloor, G4double dispRadFloor) {
+  UMSCCosThetaDenFloor() = GET_VALUE(cosThetaDenFloor) > 0.0 ? cosThetaDenFloor : static_cast<G4double>(0.0);
+  UMSCTauBlendEpsilon()  = GET_VALUE(tauBlendEpsilon) > 0.0 ? tauBlendEpsilon : static_cast<G4double>(0.0);
+  UMSCSimpleDenFloor()   = GET_VALUE(simpleDenFloor) > 0.0 ? simpleDenFloor : static_cast<G4double>(0.0);
+  UMSCDispRadFloor()     = GET_VALUE(dispRadFloor) > 0.0 ? dispRadFloor : static_cast<G4double>(0.0);
+}
+
+bool G4HepEmElectronInteractionUMSC::IsStepRandomizationEnabled() {
+  return gUseUmscStepRandomization;
+}
+
+void G4HepEmElectronInteractionUMSC::SetDebugContext(
+    int trackID, int parentID, int stepIdx, int winnerIdx, bool onBoundary) {
+  UMSCDebugContext& ctx = GetUMSCDebugContext();
+  ctx.active = true;
+  ctx.trackID = trackID;
+  ctx.parentID = parentID;
+  ctx.stepIdx = stepIdx;
+  ctx.winnerIdx = winnerIdx;
+  ctx.onBoundary = onBoundary;
+}
+
+void G4HepEmElectronInteractionUMSC::ClearDebugContext() {
+  GetUMSCDebugContext() = UMSCDebugContext{};
+}
+
+void G4HepEmElectronInteractionUMSC::LogRotationDebug(
+    const char* stage, const G4double* vecBefore, const G4double* vecAfter,
+    const G4double* refDir, G4double up) {
+  const G4double nan = UMSCDebugNaN();
+  LogUMSCStage(stage, "rotation",
+               nan, nan, nan, nan, nan, nan, nan,
+               nan, nan, nan, nan, nan,
+               vecBefore, vecAfter, refDir, up, -1);
+}
+
 // The msc step limit will be written into the G4HepEmMSCTrackData::fTrueStepLength member of
 // of the input track. If msc limits the step, this is shorter than the track->GetPStepLength.
 // Note, that in all cases, the final physical step length will need to be coverted to geometrical
@@ -20,6 +356,11 @@
 void G4HepEmElectronInteractionUMSC::StepLimit(G4HepEmData* hepEmData, G4HepEmParameters* hepEmPars,
     G4HepEmMSCTrackData* mscData, G4double ekin, int imat, G4double range, G4double presafety,
     bool onBoundary, bool iselectron, G4HepEmRandomEngine* rnge) {
+  const G4double nan = UMSCDebugNaN();
+  LogUMSCStage("step_limit_enter", "entry",
+               mscData->fTrueStepLength, ekin, nan, mscData->fLambtr1, nan, nan, nan,
+               nan, nan, nan, nan, nan,
+               nullptr, nullptr, nullptr, nan, -1);
   // Initial values:
   //  - lengths are already initialised to the current minimum physics step  which is the true, minimum
   //    step length from all other physics
@@ -35,6 +376,10 @@ void G4HepEmElectronInteractionUMSC::StepLimit(G4HepEmData* hepEmData, G4HepEmPa
   const struct G4HepEmMatData& matData = hepEmData->fTheMaterialData->fMaterialData[imat];
   if (mscData->fTrueStepLength < kTLimitMinfix || range*(matData.fUMSCPar) < presafety) {
     mscData->fIsDisplace = false;
+    LogUMSCStage("step_limit_return", "early_no_displacement",
+                 mscData->fTrueStepLength, ekin, nan, mscData->fLambtr1, nan, mscData->fTlimitMin, nan,
+                 nan, nan, nan, nan, nan,
+                 nullptr, nullptr, nullptr, nan, 1);
     return;
   }
   // set the initial range, dynamic range factor, minimal step and true step values
@@ -75,12 +420,22 @@ void G4HepEmElectronInteractionUMSC::StepLimit(G4HepEmData* hepEmData, G4HepEmPa
   const G4double tlimit    = range > presafety
                   ? (G4double)G4HepEmMax(G4HepEmMax(mscData->fInitialRange*mscData->fDynamicRangeFactor, hepEmPars->fMSCSafetyFactor*presafety), tlimitmin)
                   : (G4double)G4HepEmMax(range, tlimitmin);
+  LogUMSCStage("step_limit_tlimit", "after_tlimit",
+               mscData->fTrueStepLength, ekin, nan, mscData->fLambtr1, nan, tlimitmin, nan,
+               tlimit, nan, nan, nan, nan,
+               nullptr, nullptr, nullptr, nan, -1);
   // randomise the true step limit but only if the step was determined by msc
   if (tlimit < mscData->fTrueStepLength) { // keep mscData->fTrueStepLength otherwise as teh current step-limit --> not msc limited this step
-    const G4double dum0 = tlimit > tlimitmin
-                        ? (G4double)G4HepEmMax(rnge->Gauss(tlimit, 0.1*(tlimit - tlimitmin)), tlimitmin)
-                        : tlimitmin;
+    const G4double dum0 = gUseUmscStepRandomization
+                        ? (tlimit > tlimitmin
+                          ? (G4double)G4HepEmMax(rnge->Gauss(tlimit, 0.1*(tlimit - tlimitmin)), tlimitmin)
+                          : tlimitmin)
+                        : tlimit;
     mscData->fTrueStepLength = G4HepEmMin(dum0, mscData->fTrueStepLength);
+    LogUMSCStage("step_limit_update", "msc_limited_true_step",
+                 mscData->fTrueStepLength, ekin, nan, mscData->fLambtr1, nan, tlimitmin, nan,
+                 tlimit, nan, nan, nan, nan,
+                 nullptr, nullptr, nullptr, nan, 0);
   }
   // msc step limit is done!
   //
@@ -94,21 +449,47 @@ void G4HepEmElectronInteractionUMSC::StepLimit(G4HepEmData* hepEmData, G4HepEmPa
 void G4HepEmElectronInteractionUMSC::SampleScattering(G4HepEmData* hepEmData, G4HepEmMSCTrackData* mscData,
      G4double pStepLength, G4double preStepEkin, G4double preStepTr1mfp, G4double postStepEkin, G4double postStepTr1mfp,
      int imat, bool isElectron, G4HepEmRandomEngine* rnge) {
+  const G4double nan = UMSCDebugNaN();
   const struct G4HepEmMatData& matData = hepEmData->fTheMaterialData->fMaterialData[imat];
+  LogUMSCStage("sample_scattering_enter", "entry",
+               pStepLength, preStepEkin, postStepEkin, preStepTr1mfp, postStepTr1mfp,
+               mscData->fTlimitMin, matData.fRadiationLength,
+               nan, nan, nan, nan, nan,
+               nullptr, nullptr, nullptr, nan, -1);
   const G4double cost  = SampleCosineTheta(pStepLength, preStepEkin, preStepTr1mfp, postStepEkin, postStepTr1mfp, mscData->fTlimitMin,
                          matData.fRadiationLength, matData.fZeff, matData.fUMSCTailCoeff, matData.fUMSCThetaCoeff, isElectron, rnge);
+  LogUMSCStage("sample_scattering_cost", "after_sample_cost",
+               pStepLength, preStepEkin, postStepEkin, preStepTr1mfp, postStepTr1mfp,
+               mscData->fTlimitMin, matData.fRadiationLength,
+               nan, nan, cost, nan, nan,
+               nullptr, nullptr, nullptr, nan, -1);
   // no scattering so no dispacement in case cost = 1.0
   if (std::abs(cost) >= 1.0) {
     mscData->fIsNoScatteringInMSC = true;
     // mscData->fIsDisplace = false;
+    LogUMSCStage("sample_scattering_return", "no_scattering_abs_cost_ge_1",
+                 pStepLength, preStepEkin, postStepEkin, preStepTr1mfp, postStepTr1mfp,
+                 mscData->fTlimitMin, matData.fRadiationLength,
+                 nan, nan, cost, nan, nan,
+                 nullptr, nullptr, nullptr, nan, 1);
     return;
   }
   const G4double sth = std::sqrt((1.0 - cost)*(1.0 + cost));
   const G4double phi = k2Pi*rnge->flat();
   mscData->SetNewDirection(sth*std::cos(phi), sth*std::sin(phi), cost);
+  LogUMSCStage("sample_scattering_direction", "set_new_direction",
+               pStepLength, preStepEkin, postStepEkin, preStepTr1mfp, postStepTr1mfp,
+               mscData->fTlimitMin, matData.fRadiationLength,
+               nan, nan, cost, nan, nan,
+               nullptr, mscData->fDirection, nullptr, nan, 0);
   // compute/sample dispacement
   if (mscData->fIsDisplace && pStepLength > mscData->fZPathLength) {
     SampleDisplacement(pStepLength, phi, mscData, rnge);
+    LogUMSCStage("sample_scattering_displacement", "sampled_displacement",
+                 pStepLength, preStepEkin, postStepEkin, preStepTr1mfp, postStepTr1mfp,
+                 mscData->fTlimitMin, matData.fRadiationLength,
+                 nan, nan, cost, nan, nan,
+                 nullptr, mscData->fDisplacement, nullptr, nan, 0);
   }
 }
 
@@ -116,14 +497,26 @@ void G4HepEmElectronInteractionUMSC::SampleScattering(G4HepEmData* hepEmData, G4
 G4double G4HepEmElectronInteractionUMSC::SampleCosineTheta(G4double pStepLength, G4double preStepEkin, G4double preStepTr1mfp,
        G4double postStepEkin, G4double postStepTr1mfp, G4double umscTlimitMin, G4double radLength, G4double zeff,
        const G4double* umscTailCoeff, const G4double* umscThetaCoeff, bool isElectron, G4HepEmRandomEngine* rnge) {
+  const G4double nan = UMSCDebugNaN();
+  LogUMSCStage("cos_theta_enter", "entry",
+               pStepLength, preStepEkin, postStepEkin, preStepTr1mfp, postStepTr1mfp,
+               umscTlimitMin, radLength,
+               nan, nan, nan, nan, nan,
+               nullptr, nullptr, nullptr, nan, -1);
   // NOTE: since I already know the finalEnergy in the electron Manager and that is already set to the track,
   //       I could get the logFinalEnergy from the updated track which could save up one log call
   // compute the 1rst transport mfp at the post-step point energy
-  const G4double iPreStepTr1mfp = 1.0/preStepTr1mfp;
+  const G4double cosDenFloor = UMSCCosThetaDenFloor();
+  const G4double tauBlendEps = UMSCTauBlendEpsilon();
+  const G4double iPreStepTr1mfp = UMSCRegularizedRatioKeepPrimal(1.0, preStepTr1mfp, cosDenFloor);
   const G4double deltaR1mfp     = preStepTr1mfp - postStepTr1mfp;
-  const G4double tau = std::abs(deltaR1mfp) > 0.01*preStepTr1mfp
-                     ? (G4double)(pStepLength*G4HepEmLog(preStepTr1mfp/postStepTr1mfp)/deltaR1mfp)
-                     : (G4double)(pStepLength*iPreStepTr1mfp);
+  const G4double tau = UMSCRegularizedTauKeepPrimal(
+      pStepLength, preStepTr1mfp, postStepTr1mfp, cosDenFloor, tauBlendEps);
+  LogUMSCStage("cos_theta_tau", "after_tau",
+               pStepLength, preStepEkin, postStepEkin, preStepTr1mfp, postStepTr1mfp,
+               umscTlimitMin, radLength,
+               tau, nan, nan, nan, nan,
+               nullptr, nullptr, nullptr, nan, -1);
   //
   // Note:  `currentTau = tau` that is used in G4Urban before the displacement
   //        sampling and dispacement is done only if (currentTau >= tausmall)
@@ -136,12 +529,23 @@ G4double G4HepEmElectronInteractionUMSC::SampleCosineTheta(G4double pStepLength,
   // isotropic case i.e. uniform cost
   const G4double kTauBig   = 8.0;
   if (tau > kTauBig) {
-    return 2.0*rnge->flat() - 1.0;
+    const G4double sampledCost = 2.0*rnge->flat() - 1.0;
+    LogUMSCStage("cos_theta_return", "tau_gt_tau_big_isotropic",
+                 pStepLength, preStepEkin, postStepEkin, preStepTr1mfp, postStepTr1mfp,
+                 umscTlimitMin, radLength,
+                 tau, nan, sampledCost, nan, nan,
+                 nullptr, nullptr, nullptr, nan, 1);
+    return sampledCost;
   }
   //
   // zero scattering i.e. cost = 1.0
   const G4double kTauSmall = 1.0E-16;
   if (tau < kTauSmall) {
+    LogUMSCStage("cos_theta_return", "tau_lt_tau_small_no_scattering",
+                 pStepLength, preStepEkin, postStepEkin, preStepTr1mfp, postStepTr1mfp,
+                 umscTlimitMin, radLength,
+                 tau, nan, 1.0, nan, nan,
+                 nullptr, nullptr, nullptr, nan, 1);
     return 1.0;
   }
   //
@@ -157,7 +561,13 @@ G4double G4HepEmElectronInteractionUMSC::SampleCosineTheta(G4double pStepLength,
   }
   //  - too large step of low-energy particle
   if (postStepEkin < 0.5*preStepEkin) {
-    return SimpleScattering(xmeanth, x2meanth, rnge);
+    const G4double sampledCost = SimpleScattering(xmeanth, x2meanth, rnge);
+    LogUMSCStage("cos_theta_return", "low_postE_simple_scattering",
+                 pStepLength, preStepEkin, postStepEkin, preStepTr1mfp, postStepTr1mfp,
+                 umscTlimitMin, radLength,
+                 tau, nan, sampledCost, nan, nan,
+                 nullptr, nullptr, nullptr, nan, 1);
+    return sampledCost;
   }
   // - sample theta0 and check if the step is extreme small
   //   note: below `lambdaLimit = 1.0 [mm]`
@@ -166,14 +576,30 @@ G4double G4HepEmElectronInteractionUMSC::SampleCosineTheta(G4double pStepLength,
   const G4double theta0      = stpNotExSmall
                             ? ComputeTheta0(pStepLength/radLength, postStepEkin, preStepEkin, zeff, umscThetaCoeff, isElectron)
                             : (G4double)(ComputeTheta0(tsmall/radLength,      postStepEkin, preStepEkin, zeff, umscThetaCoeff, isElectron)*std::sqrt(pStepLength/tsmall));
+  LogUMSCStage("cos_theta_theta0", "after_theta0",
+               pStepLength, preStepEkin, postStepEkin, preStepTr1mfp, postStepTr1mfp,
+               umscTlimitMin, radLength,
+               tau, theta0, nan, nan, nan,
+               nullptr, nullptr, nullptr, nan, -1);
   //
   if (theta0 > kPi*0.166666) {
-    return SimpleScattering(xmeanth, x2meanth, rnge);
+    const G4double sampledCost = SimpleScattering(xmeanth, x2meanth, rnge);
+    LogUMSCStage("cos_theta_return", "theta0_large_simple_scattering",
+                 pStepLength, preStepEkin, postStepEkin, preStepTr1mfp, postStepTr1mfp,
+                 umscTlimitMin, radLength,
+                 tau, theta0, sampledCost, nan, nan,
+                 nullptr, nullptr, nullptr, nan, 1);
+    return sampledCost;
   }
   // protection for very small angles (cost = 1)
   const G4double theta2 = theta0*theta0;
   if (theta2 < kTauSmall) {
     // zero scattering i.e. cost = 1.0
+    LogUMSCStage("cos_theta_return", "theta2_lt_tau_small_no_scattering",
+                 pStepLength, preStepEkin, postStepEkin, preStepTr1mfp, postStepTr1mfp,
+                 umscTlimitMin, radLength,
+                 tau, theta0, 1.0, nan, nan,
+                 nullptr, nullptr, nullptr, nan, 1);
     return 1.0;
   }
 
@@ -190,7 +616,7 @@ G4double G4HepEmElectronInteractionUMSC::SampleCosineTheta(G4double pStepLength,
                         : parXsi;
   const G4double dumC1  = parC - 1.;
   const G4double dumEa  = G4HepEmExp(-parXsi);
-  const G4double dumEaa = 1./(1. - dumEa);
+  const G4double dumEaa = UMSCRegularizedRatioKeepPrimal(1.0, 1. - dumEa, cosDenFloor);
   G4double thex = theta2*(1.0 - theta2*0.0833333);
   if (theta2 > 0.01) {
     const G4double  dum = 2.0*std::sin(0.5*theta0);
@@ -199,7 +625,13 @@ G4double G4HepEmElectronInteractionUMSC::SampleCosineTheta(G4double pStepLength,
   const G4double xmean1 = 1. - (1. - (1. + parXsi)*dumEa)*thex*dumEaa;
   //
   if (xmean1 <= 0.999*xmeanth) {
-    return SimpleScattering(xmeanth, x2meanth, rnge);
+    const G4double sampledCost = SimpleScattering(xmeanth, x2meanth, rnge);
+    LogUMSCStage("cos_theta_return", "xmean1_guard_simple_scattering",
+                 pStepLength, preStepEkin, postStepEkin, preStepTr1mfp, postStepTr1mfp,
+                 umscTlimitMin, radLength,
+                 tau, theta0, sampledCost, nan, nan,
+                 nullptr, nullptr, nullptr, nan, 1);
+    return sampledCost;
   }
   //
   const G4double  x0 = 1. - parXsi*thex;
@@ -210,33 +642,65 @@ G4double G4HepEmElectronInteractionUMSC::SampleCosineTheta(G4double pStepLength,
 
   const G4double eb1 = G4HepEmPow(b1, dumC1);
   const G4double ebx = G4HepEmPow(bx, dumC1);
-  const G4double   d = ebx/eb1;
+  const G4double   d = UMSCRegularizedRatioKeepPrimal(ebx, eb1, cosDenFloor);
 
-  const G4double xmean2 = (x0 + d - (bx - b1*d)/(parC - 2.))/(1. - d);
+  const G4double xmean2Num = x0 + d - UMSCRegularizedRatioKeepPrimal((bx - b1*d), (parC - 2.), cosDenFloor);
+  const G4double xmean2 = UMSCRegularizedRatioKeepPrimal(xmean2Num, (1. - d), cosDenFloor);
 
   const G4double f1x0 = dumEa*dumEaa;
-  const G4double f2x0 = dumC1/(parC*(1. - d));
-  const G4double prob = f2x0/(f1x0 + f2x0);
+  const G4double f2x0 = UMSCRegularizedRatioKeepPrimal(dumC1, parC*(1. - d), cosDenFloor);
+  const G4double prob = UMSCRegularizedRatioKeepPrimal(f2x0, (f1x0 + f2x0), cosDenFloor);
 
-  const G4double qprb = xmeanth/(prob*xmean1 + (1. - prob)*xmean2);
+  const G4double qprb = UMSCRegularizedRatioKeepPrimal(xmeanth, (prob*xmean1 + (1. - prob)*xmean2), cosDenFloor);
+  LogUMSCStage("cos_theta_pre_sample", "before_sampling_cost",
+               pStepLength, preStepEkin, postStepEkin, preStepTr1mfp, postStepTr1mfp,
+               umscTlimitMin, radLength,
+               tau, theta0, nan, qprb, prob,
+               nullptr, nullptr, nullptr, nan, -1);
   //
   // sampling of cost
   G4double rndArray[3];
   rnge->flatArray(3, rndArray);
   if (rndArray[0] < qprb) {
     if (rndArray[1] < prob) {
-      return  1. + G4HepEmLog(dumEa + rndArray[2]/dumEaa)*thex;
+      const G4double sampledCost = 1. + G4HepEmLog(dumEa + rndArray[2]/dumEaa)*thex;
+      LogUMSCStage("cos_theta_return", "sample_branch_exp",
+                   pStepLength, preStepEkin, postStepEkin, preStepTr1mfp, postStepTr1mfp,
+                   umscTlimitMin, radLength,
+                   tau, theta0, sampledCost, qprb, prob,
+                   nullptr, nullptr, nullptr, nan, 0);
+      return sampledCost;
     } else {
       const G4double var0 = (1.0 - d)*rndArray[2];
       if (var0 < 0.01*d) {
-        const G4double var = var0/(d*dumC1);
-        return -1.0 + var*(1.0 - var*0.5*parC)*b1;
+        const G4double var = UMSCRegularizedRatioKeepPrimal(var0, d*dumC1, cosDenFloor);
+        const G4double sampledCost = -1.0 + var*(1.0 - var*0.5*parC)*b1;
+        LogUMSCStage("cos_theta_return", "sample_branch_var_small",
+                     pStepLength, preStepEkin, postStepEkin, preStepTr1mfp, postStepTr1mfp,
+                     umscTlimitMin, radLength,
+                     tau, theta0, sampledCost, qprb, prob,
+                     nullptr, nullptr, nullptr, nan, 0);
+        return sampledCost;
       } else {
-        return  1.0 + thex*(parC - parXsi - parC*G4HepEmPow(var0 + d, -1./dumC1));
+        const G4double invDumC1 = UMSCRegularizedRatioKeepPrimal(-1.0, dumC1, cosDenFloor);
+        const G4double powTerm = UMSCRegularizedPowKeepPrimal(var0 + d, invDumC1, cosDenFloor);
+        const G4double sampledCost = 1.0 + thex*(parC - parXsi - parC*powTerm);
+        LogUMSCStage("cos_theta_return", "sample_branch_var_general",
+                     pStepLength, preStepEkin, postStepEkin, preStepTr1mfp, postStepTr1mfp,
+                     umscTlimitMin, radLength,
+                     tau, theta0, sampledCost, qprb, prob,
+                     nullptr, nullptr, nullptr, nan, 0);
+        return sampledCost;
       }
     }
   } else {
-    return 2.0*rndArray[1] - 1.0;
+    const G4double sampledCost = 2.0*rndArray[1] - 1.0;
+    LogUMSCStage("cos_theta_return", "sample_branch_uniform",
+                 pStepLength, preStepEkin, postStepEkin, preStepTr1mfp, postStepTr1mfp,
+                 umscTlimitMin, radLength,
+                 tau, theta0, sampledCost, qprb, prob,
+                 nullptr, nullptr, nullptr, nan, 0);
+    return sampledCost;
   }
 }
 
@@ -244,15 +708,17 @@ G4double G4HepEmElectronInteractionUMSC::SampleCosineTheta(G4double pStepLength,
 G4double G4HepEmElectronInteractionUMSC::SimpleScattering(G4double xmeanth, G4double x2meanth, G4HepEmRandomEngine* rnge) {
   // 'large angle scattering'
   // 2 model functions with correct xmean and x2mean
+  const G4double simpleDenFloor = UMSCSimpleDenFloor();
   const G4double dum0 = 3.*x2meanth - 1;
   const G4double dum1 = 2.*xmeanth  - dum0;
-  const G4double    a = 1. + 4.*dum0/dum1;
-  const G4double prob = (2. + a)*xmeanth/a;
+  const G4double    a = 1. + UMSCRegularizedRatioKeepPrimal(4.*dum0, dum1, simpleDenFloor);
+  const G4double prob = UMSCRegularizedRatioKeepPrimal((2. + a)*xmeanth, a, simpleDenFloor);
   // sampling
   G4double rndArray[2];
   rnge->flatArray(2, rndArray);
+  const G4double oneOverOnePlusA = UMSCRegularizedRatioKeepPrimal(1.0, 1. + a, simpleDenFloor);
   return (rndArray[0] < prob)
-         ? (G4double)(-1. + 2.*G4HepEmPow(rndArray[1],1./(1. + a)))
+         ? (G4double)(-1. + 2.*G4HepEmPow(rndArray[1], oneOverOnePlusA))
          : (G4double)(-1. + 2.*rndArray[1]);
 }
 
@@ -306,7 +772,9 @@ void G4HepEmElectronInteractionUMSC::SampleDisplacement(G4double pStepLength, G4
   // simple and fast sampling
   // based on single scattering results
   // u = r/rmax : mean value (r = 0.73*rmax where rmax:= sqrt(t-g)*(t+g))
-  const G4double r = 0.73*std::sqrt((pStepLength - mscData->fZPathLength)*(pStepLength + mscData->fZPathLength));
+  const G4double dispRadFloor = UMSCDispRadFloor();
+  const G4double radicand = (pStepLength - mscData->fZPathLength)*(pStepLength + mscData->fZPathLength);
+  const G4double r = 0.73*UMSCRegularizedSqrtKeepPrimal(radicand, dispRadFloor);
   // simple distribution for v=Phi-phi=psi ~exp(-beta*v)
   // beta determined from the requirement that distribution should give
   // the same mean value than that obtained from the ss simulation

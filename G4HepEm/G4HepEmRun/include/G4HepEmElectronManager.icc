@@ -25,10 +25,367 @@
 #include "G4HepEmElectronInteractionUMSC.hh"
 #include "G4HepEmPositronInteractionAnnihilation.hh"
 
+#include <cstdlib>
+#include <cmath>
+#include <fstream>
+#include <limits>
+#include <mutex>
+#include <unordered_map>
+
 // tlData GetPrimaryElectronTrack needs to be set needs to be set based on the G4Track;
 
 //#define NOMSC
 //#define NOFLUCTUATION
+
+namespace {
+
+int ReadEnvInt(const char* key, int defaultValue) {
+  const char* raw = std::getenv(key);
+  if (raw == nullptr || *raw == '\0') {
+    return defaultValue;
+  }
+  char* endPtr = nullptr;
+  const long parsed = std::strtol(raw, &endPtr, 10);
+  if (endPtr == raw) {
+    return defaultValue;
+  }
+  return static_cast<int>(parsed);
+}
+
+const char* ReadEnvStr(const char* key, const char* defaultValue) {
+  const char* raw = std::getenv(key);
+  if (raw == nullptr || *raw == '\0') {
+    return defaultValue;
+  }
+  return raw;
+}
+
+inline double ValueOf(const G4double& v) {
+  return static_cast<double>(GET_VALUE(v));
+}
+
+#if defined(CODI_FORWARD)
+inline double DotOf(const G4double& v) {
+  return static_cast<double>(GET_DOTVALUE(v));
+}
+#else
+inline double DotOf(const G4double&) {
+  return 0.0;
+}
+#endif
+
+G4double& NumIALeftDerivativeMfpFloor() {
+  static G4double floor = static_cast<G4double>(0.0);
+  return floor;
+}
+
+G4double& ConversionDerivativeEpsilon() {
+  static G4double epsilon = static_cast<G4double>(0.0);
+  return epsilon;
+}
+
+inline G4double SignedFloorFromValue(const G4double& val, const G4double& floor) {
+  if (!(GET_VALUE(floor) > 0.0)) {
+    return val;
+  }
+  const double absVal = std::abs(GET_VALUE(val));
+  if (absVal >= GET_VALUE(floor)) {
+    return val;
+  }
+  return GET_VALUE(val) < 0.0 ? -floor : floor;
+}
+
+inline G4double PositiveFloorFromValue(const G4double& val, const G4double& floor) {
+  if (!(GET_VALUE(floor) > 0.0)) {
+    return val;
+  }
+  return GET_VALUE(val) > GET_VALUE(floor) ? val : floor;
+}
+
+inline G4double RegularizedRatioKeepPrimal(const G4double& num, const G4double& den, const G4double& denFloor) {
+  if (!(GET_VALUE(denFloor) > 0.0)) {
+    return num / den;
+  }
+  const G4double numVal = stop_grad(num);
+  const G4double denVal = stop_grad(den);
+  const G4double denReg = SignedFloorFromValue(denVal, denFloor);
+  const G4double primal = stop_grad(numVal / denVal);
+  const G4double dfdn = stop_grad(1.0 / denReg);
+  const G4double dfdd = stop_grad(-numVal / (denReg * denReg));
+  return primal + (num - numVal) * dfdn + (den - denVal) * dfdd;
+}
+
+inline G4double RegularizedLogOneMinusRatioKeepPrimal(const G4double& z, const G4double& lambda, const G4double& eps) {
+  if (!(GET_VALUE(eps) > 0.0)) {
+    return G4HepEmLog(1. - z / lambda);
+  }
+  const G4double zVal = stop_grad(z);
+  const G4double lambdaVal = stop_grad(lambda);
+  const G4double primal = stop_grad(G4HepEmLog(1. - zVal / lambdaVal));
+  const G4double gapVal = lambdaVal - zVal;
+  const G4double gapReg = PositiveFloorFromValue(gapVal, eps);
+  const G4double lambdaReg = PositiveFloorFromValue(lambdaVal, eps);
+  const G4double dfdz = stop_grad(-1.0 / gapReg);
+  const G4double dfdl = stop_grad(zVal / (lambdaReg * gapReg));
+  return primal + (z - zVal) * dfdz + (lambda - lambdaVal) * dfdl;
+}
+
+inline G4double RegularizedConvertParPosKeepPrimal(const G4double& par1, const G4double& par3, const G4double& zPath, const G4double& eps) {
+  if (!(GET_VALUE(eps) > 0.0)) {
+    const G4double dum = par1 * par3 * zPath;
+    return (1. - G4HepEmPow(1. - dum, 1. / par3)) / par1;
+  }
+  const G4double pVal = stop_grad(par1);
+  const G4double qVal = stop_grad(par3);
+  const G4double zVal = stop_grad(zPath);
+  const G4double dumVal = pVal * qVal * zVal;
+  const G4double primal = stop_grad((1. - G4HepEmPow(1. - dumVal, 1. / qVal)) / pVal);
+
+  const G4double pReg = SignedFloorFromValue(pVal, eps);
+  const G4double qReg = SignedFloorFromValue(qVal, eps);
+  const G4double bReg = PositiveFloorFromValue(1. - dumVal, eps);
+  const G4double pAbsVal = static_cast<G4double>(std::abs(GET_VALUE(pVal)));
+  const G4double qAbsVal = static_cast<G4double>(std::abs(GET_VALUE(qVal)));
+  const G4double pAbsReg = PositiveFloorFromValue(pAbsVal, eps);
+  const G4double qAbsReg = PositiveFloorFromValue(qAbsVal, eps);
+
+  const G4double aReg = stop_grad(1.0 / qReg);
+  const G4double powReg = stop_grad(G4HepEmPow(bReg, aReg));
+
+  const G4double dfdz = stop_grad(powReg / bReg);
+  const G4double dfdp = stop_grad(-(1. - powReg) / (pReg * pReg) + (powReg * zVal) / (pReg * bReg));
+  const G4double dfdq = stop_grad(powReg * (zVal / (qReg * bReg) + G4HepEmLog(bReg) / (pAbsReg * qAbsReg * qAbsReg)));
+
+  return primal + (par1 - pVal) * dfdp + (par3 - qVal) * dfdq + (zPath - zVal) * dfdz;
+}
+
+G4double RegularizedNumIADecrement(const G4double& pStepLength, const G4double& preStepMFP) {
+  const G4double mfpFloor = NumIALeftDerivativeMfpFloor();
+  if (!(GET_VALUE(mfpFloor) > 0.0)) {
+    return pStepLength / preStepMFP;
+  }
+
+  // Keep primal exactly p/m while regularizing derivative coefficients with floored m.
+  const G4double pVal = stop_grad(pStepLength);
+  const G4double mVal = stop_grad(preStepMFP);
+  const G4double mReg = GET_VALUE(mVal) > GET_VALUE(mfpFloor) ? mVal : mfpFloor;
+
+  const G4double primalBase = stop_grad(pVal / mVal);
+  const G4double dfdp       = stop_grad(1.0 / mReg);
+  const G4double dfdm       = stop_grad(-pVal / (mReg * mReg));
+
+  return primalBase + (pStepLength - pVal) * dfdp + (preStepMFP - mVal) * dfdm;
+}
+
+int DebugTrackId() {
+  static const int kTrackId = ReadEnvInt("HEPEMSHOW_DEBUG_TRACK_ID", -1);
+  return kTrackId;
+}
+
+bool IsHepEmDebugLoggingEnabled() {
+  static const int kEnabled = ReadEnvInt("HEPEMSHOW_ENABLE_DEBUG_LOGS", 0);
+  return kEnabled != 0;
+}
+
+bool ShouldDebugTrack(int trackId) {
+  if (!IsHepEmDebugLoggingEnabled()) {
+    return false;
+  }
+  const int wantedTrackId = DebugTrackId();
+  return wantedTrackId >= 0 && trackId == wantedTrackId;
+}
+
+std::mutex& DebugLogMutex() {
+  static std::mutex mtx;
+  return mtx;
+}
+
+std::ofstream& DebugLogStream() {
+  static std::ofstream out;
+  static bool initialised = false;
+  if (!initialised) {
+    const char* filePath = ReadEnvStr("HEPEMSHOW_PERFORM_DEBUG_FILE", "perform_continuous_debug.csv");
+    out.open(filePath, std::ios::out | std::ios::trunc);
+    if (out.good()) {
+      out << "trackID,parentID,stepIdx,stage,winnerIdx,onBoundary,"
+          << "gStepLength,gStepLength_dot,"
+          << "pStepLength,pStepLength_dot,"
+          << "trueStepLength,trueStepLength_dot,"
+          << "zPathLength,zPathLength_dot,"
+          << "lambtr1,lambtr1_dot,"
+          << "par1,par1_dot,"
+          << "par2,par2_dot,"
+          << "par3,par3_dot,"
+          << "numIAleft0,numIAleft0_dot,"
+          << "numIAleft1,numIAleft1_dot,"
+          << "numIAleft2,numIAleft2_dot,"
+          << "mfp0,mfp0_dot,"
+          << "mfp1,mfp1_dot,"
+          << "mfp2,mfp2_dot,"
+          << "eKin,eKin_dot,"
+          << "edep,edep_dot,"
+          << "returnFlag\n";
+      out.setf(std::ios::scientific);
+    }
+    initialised = true;
+  }
+  return out;
+}
+
+std::unordered_map<int, int>& DebugStepIndexMap() {
+  static thread_local std::unordered_map<int, int> perTrackStep;
+  return perTrackStep;
+}
+
+int GetDebugStepIndex(int trackId) {
+  return DebugStepIndexMap()[trackId];
+}
+
+void AdvanceDebugStepIndex(int trackId) {
+  ++DebugStepIndexMap()[trackId];
+}
+
+struct DebugTrackContext {
+  bool active = false;
+  int trackId = -1;
+  int parentId = -1;
+  int stepIdx = -1;
+  int winnerIdx = -1;
+  bool onBoundary = false;
+};
+
+DebugTrackContext& GetDebugTrackContext() {
+  static thread_local DebugTrackContext ctx;
+  return ctx;
+}
+
+void SetDebugContextFromTrack(G4HepEmTrack* theTrack, int stepIndex) {
+  DebugTrackContext& ctx = GetDebugTrackContext();
+  ctx.active = true;
+  ctx.trackId = theTrack->GetID();
+  ctx.parentId = theTrack->GetParentID();
+  ctx.stepIdx = stepIndex;
+  ctx.winnerIdx = theTrack->GetWinnerProcessIndex();
+  ctx.onBoundary = theTrack->GetOnBoundary();
+}
+
+void ClearDebugContext() {
+  GetDebugTrackContext() = DebugTrackContext{};
+}
+
+bool HasDebugContext() {
+  const DebugTrackContext& ctx = GetDebugTrackContext();
+  return ctx.active && ShouldDebugTrack(ctx.trackId);
+}
+
+G4double DebugNaN() {
+  return static_cast<G4double>(std::numeric_limits<double>::quiet_NaN());
+}
+
+std::ofstream& ConversionDebugLogStream() {
+  static std::ofstream out;
+  static bool initialised = false;
+  if (!initialised) {
+    const char* filePath = ReadEnvStr("HEPEMSHOW_CONVERSION_DEBUG_FILE", "conversion_debug.csv");
+    out.open(filePath, std::ios::out | std::ios::trunc);
+    if (out.good()) {
+      out << "trackID,parentID,stepIdx,stage,winnerIdx,onBoundary,"
+          << "range,range_dot,"
+          << "gStepToConvert,gStepToConvert_dot,"
+          << "ekin,ekin_dot,"
+          << "trueStepLength,trueStepLength_dot,"
+          << "zPathLength,zPathLength_dot,"
+          << "lambtr1,lambtr1_dot,"
+          << "par1,par1_dot,"
+          << "par2,par2_dot,"
+          << "par3,par3_dot,"
+          << "returnFlag\n";
+      out.setf(std::ios::scientific);
+    }
+    initialised = true;
+  }
+  return out;
+}
+
+void LogConversionCheckpoint(const char* stage, int returnFlag, G4HepEmMSCTrackData* mscData,
+                            G4double range, G4double gStepToConvert, G4double ekin) {
+  if (!HasDebugContext()) {
+    return;
+  }
+  std::ofstream& out = ConversionDebugLogStream();
+  if (!out.good()) {
+    return;
+  }
+
+  const DebugTrackContext& ctx = GetDebugTrackContext();
+  std::lock_guard<std::mutex> lock(DebugLogMutex());
+  out
+    << ctx.trackId << ','
+    << ctx.parentId << ','
+    << ctx.stepIdx << ','
+    << stage << ','
+    << ctx.winnerIdx << ','
+    << ctx.onBoundary << ','
+    << ValueOf(range) << ',' << DotOf(range) << ','
+    << ValueOf(gStepToConvert) << ',' << DotOf(gStepToConvert) << ','
+    << ValueOf(ekin) << ',' << DotOf(ekin) << ','
+    << ValueOf(mscData->fTrueStepLength) << ',' << DotOf(mscData->fTrueStepLength) << ','
+    << ValueOf(mscData->fZPathLength) << ',' << DotOf(mscData->fZPathLength) << ','
+    << ValueOf(mscData->fLambtr1) << ',' << DotOf(mscData->fLambtr1) << ','
+    << ValueOf(mscData->fPar1) << ',' << DotOf(mscData->fPar1) << ','
+    << ValueOf(mscData->fPar2) << ',' << DotOf(mscData->fPar2) << ','
+    << ValueOf(mscData->fPar3) << ',' << DotOf(mscData->fPar3) << ','
+    << returnFlag
+    << '\n';
+  out.flush();
+}
+
+void LogPerformContinuousCheckpoint(const char* stage, int stepIndex, int returnFlag, G4HepEmElectronTrack* theElTrack) {
+  G4HepEmTrack* theTrack = theElTrack->GetTrack();
+  const int trackId = theTrack->GetID();
+  if (!ShouldDebugTrack(trackId)) {
+    return;
+  }
+  SetDebugContextFromTrack(theTrack, stepIndex);
+  std::ofstream& out = DebugLogStream();
+  if (!out.good()) {
+    return;
+  }
+
+  G4HepEmMSCTrackData* mscData = theElTrack->GetMSCTrackData();
+  G4double* numIALeft = theTrack->GetNumIALeft();
+  G4double* mfp = theTrack->GetMFP();
+
+  std::lock_guard<std::mutex> lock(DebugLogMutex());
+  out
+    << trackId << ','
+    << theTrack->GetParentID() << ','
+    << stepIndex << ','
+    << stage << ','
+    << theTrack->GetWinnerProcessIndex() << ','
+    << theTrack->GetOnBoundary() << ','
+    << ValueOf(theTrack->GetGStepLength()) << ',' << DotOf(theTrack->GetGStepLength()) << ','
+    << ValueOf(theElTrack->GetPStepLength()) << ',' << DotOf(theElTrack->GetPStepLength()) << ','
+    << ValueOf(mscData->fTrueStepLength) << ',' << DotOf(mscData->fTrueStepLength) << ','
+    << ValueOf(mscData->fZPathLength) << ',' << DotOf(mscData->fZPathLength) << ','
+    << ValueOf(mscData->fLambtr1) << ',' << DotOf(mscData->fLambtr1) << ','
+    << ValueOf(mscData->fPar1) << ',' << DotOf(mscData->fPar1) << ','
+    << ValueOf(mscData->fPar2) << ',' << DotOf(mscData->fPar2) << ','
+    << ValueOf(mscData->fPar3) << ',' << DotOf(mscData->fPar3) << ','
+    << ValueOf(numIALeft[0]) << ',' << DotOf(numIALeft[0]) << ','
+    << ValueOf(numIALeft[1]) << ',' << DotOf(numIALeft[1]) << ','
+    << ValueOf(numIALeft[2]) << ',' << DotOf(numIALeft[2]) << ','
+    << ValueOf(mfp[0]) << ',' << DotOf(mfp[0]) << ','
+    << ValueOf(mfp[1]) << ',' << DotOf(mfp[1]) << ','
+    << ValueOf(mfp[2]) << ',' << DotOf(mfp[2]) << ','
+    << ValueOf(theTrack->GetEKin()) << ',' << DotOf(theTrack->GetEKin()) << ','
+    << ValueOf(theTrack->GetEnergyDeposit()) << ',' << DotOf(theTrack->GetEnergyDeposit()) << ','
+    << returnFlag
+    << '\n';
+  out.flush();
+}
+
+}  // namespace
 
 
 // Note: pStepLength will be set here i.e. this is the first access to it that
@@ -162,8 +519,18 @@ void G4HepEmElectronManager::HowFarToMSC(struct G4HepEmData* hepEmData, struct G
 }
 
 void G4HepEmElectronManager::HowFar(struct G4HepEmData* hepEmData, struct G4HepEmParameters* hepEmPars, G4HepEmElectronTrack* theElTrack, G4HepEmRandomEngine* rnge) {
+  G4HepEmTrack* theTrack = theElTrack->GetTrack();
+  const int trackId = theTrack->GetID();
+  const bool doDebug = ShouldDebugTrack(trackId);
+  const int stepIndex = doDebug ? GetDebugStepIndex(trackId) : -1;
+  if (doDebug) {
+    SetDebugContextFromTrack(theTrack, stepIndex);
+  }
   HowFarToDiscreteInteraction(hepEmData, hepEmPars, theElTrack);
   HowFarToMSC(hepEmData, hepEmPars, theElTrack, rnge);
+  if (doDebug) {
+    ClearDebugContext();
+  }
 }
 
 void G4HepEmElectronManager::UpdatePStepLength(G4HepEmElectronTrack* theElTrack) {
@@ -205,9 +572,17 @@ void G4HepEmElectronManager::UpdateNumIALeft(G4HepEmElectronTrack* theElTrack) {
   G4HepEmTrack*   theTrack = theElTrack->GetTrack();
   G4double*    numInterALeft = theTrack->GetNumIALeft();
   G4double*       preStepMFP = theTrack->GetMFP();
-  numInterALeft[0] -= pStepLength/preStepMFP[0];
-  numInterALeft[1] -= pStepLength/preStepMFP[1];
-  numInterALeft[2] -= pStepLength/preStepMFP[2];
+  numInterALeft[0] -= RegularizedNumIADecrement(pStepLength, preStepMFP[0]);
+  numInterALeft[1] -= RegularizedNumIADecrement(pStepLength, preStepMFP[1]);
+  numInterALeft[2] -= RegularizedNumIADecrement(pStepLength, preStepMFP[2]);
+}
+
+void G4HepEmElectronManager::ConfigureNumIALeftDerivativeRegularization(G4double mfpFloor) {
+  NumIALeftDerivativeMfpFloor() = GET_VALUE(mfpFloor) > 0.0 ? mfpFloor : static_cast<G4double>(0.0);
+}
+
+void G4HepEmElectronManager::ConfigureConversionDerivativeRegularization(G4double epsilon) {
+  ConversionDerivativeEpsilon() = GET_VALUE(epsilon) > 0.0 ? epsilon : static_cast<G4double>(0.0);
 }
 
 bool G4HepEmElectronManager::ApplyMeanEnergyLoss(struct G4HepEmData* hepEmData, struct G4HepEmParameters* hepEmPars, G4HepEmElectronTrack* theElTrack) {
@@ -257,6 +632,17 @@ void G4HepEmElectronManager::SampleMSC(struct G4HepEmData* hepEmData, struct G4H
 #ifndef NOMSC
   const G4double pStepLength = theElTrack->GetPStepLength();
   G4HepEmTrack*   theTrack = theElTrack->GetTrack();
+  const int dbgTrackId = theTrack->GetID();
+  if (ShouldDebugTrack(dbgTrackId)) {
+    G4HepEmElectronInteractionUMSC::SetDebugContext(
+        dbgTrackId,
+        theTrack->GetParentID(),
+        GetDebugStepIndex(dbgTrackId),
+        theTrack->GetWinnerProcessIndex(),
+        theTrack->GetOnBoundary());
+  } else {
+    G4HepEmElectronInteractionUMSC::ClearDebugContext();
+  }
   const bool    isElectron = (theTrack->GetCharge() < 0.0);
   const int         theIMC = theTrack->GetMCIndex();
   const G4double preStepEkin = theElTrack->GetPreStepEKin();
@@ -303,14 +689,23 @@ void G4HepEmElectronManager::SampleMSC(struct G4HepEmData* hepEmData, struct G4H
     //
     // rotate direction and displacement vectors (if any) and update new direction of the primary
     if (!(mscData->fIsNoScatteringInMSC)) {
+      G4double dirBefore[3] = {mscData->fDirection[0], mscData->fDirection[1], mscData->fDirection[2]};
+      G4double refDir[3] = {theTrack->GetDirection()[0], theTrack->GetDirection()[1], theTrack->GetDirection()[2]};
+      const G4double up = std::sqrt(refDir[0] * refDir[0] + refDir[1] * refDir[1]);
       RotateToReferenceFrame(mscData->fDirection, theTrack->GetDirection());
+      G4HepEmElectronInteractionUMSC::LogRotationDebug(
+          "samplemsc_rotate_direction", dirBefore, mscData->fDirection, refDir, up);
       if (mscData->fIsDisplace) {
+        G4double dispBefore[3] = {mscData->fDisplacement[0], mscData->fDisplacement[1], mscData->fDisplacement[2]};
         RotateToReferenceFrame(mscData->fDisplacement, theTrack->GetDirection());
+        G4HepEmElectronInteractionUMSC::LogRotationDebug(
+            "samplemsc_rotate_displacement", dispBefore, mscData->fDisplacement, refDir, up);
       }
       // upadte new direction
       theTrack->SetDirection(mscData->fDirection);
     }
   }
+  G4HepEmElectronInteractionUMSC::ClearDebugContext();
 #endif
 }
 
@@ -364,13 +759,27 @@ bool G4HepEmElectronManager::SampleLossFluctuations(struct G4HepEmData* hepEmDat
 // Note: energy deposit will be set here i.e. this is the first access to it that
 //       will clear the previous step value.
 bool G4HepEmElectronManager::PerformContinuous(struct G4HepEmData* hepEmData, struct G4HepEmParameters* hepEmPars, G4HepEmElectronTrack* theElTrack, G4HepEmRandomEngine* rnge) {
+  G4HepEmTrack* theTrack = theElTrack->GetTrack();
+  const int trackId = theTrack->GetID();
+  const bool doDebug = ShouldDebugTrack(trackId);
+  const int stepIndex = doDebug ? GetDebugStepIndex(trackId) : -1;
+  if (doDebug) {
+    SetDebugContextFromTrack(theTrack, stepIndex);
+  }
+
   theElTrack->SavePreStepEKin();
   //
   // === 1. MSC should be invoked to obtain the physics step Length
   UpdatePStepLength(theElTrack);
+  LogPerformContinuousCheckpoint("after_UpdatePStepLength", stepIndex, -1, theElTrack);
   const G4double pStepLength = theElTrack->GetPStepLength();
 
   if (pStepLength<=0.0) {
+    LogPerformContinuousCheckpoint("return_pStepLength_le_zero", stepIndex, 0, theElTrack);
+    if (doDebug) {
+      AdvanceDebugStepIndex(trackId);
+      ClearDebugContext();
+    }
     return false;
   }
   // compute the energy loss first based on the new step length: it will be needed in the
@@ -381,18 +790,31 @@ bool G4HepEmElectronManager::PerformContinuous(struct G4HepEmData* hepEmData, st
   // === 2. The `number-of-interaction-left` needs to be updated based on the actual
   //        physical step Length
   UpdateNumIALeft(theElTrack);
+  LogPerformContinuousCheckpoint("after_UpdateNumIALeft", stepIndex, -1, theElTrack);
   //
   // === 3. Continuous energy loss needs to be computed
   bool stopped = ApplyMeanEnergyLoss(hepEmData, hepEmPars, theElTrack);
+  LogPerformContinuousCheckpoint("after_ApplyMeanEnergyLoss", stepIndex, stopped ? 1 : 0, theElTrack);
   if (stopped) {
+    if (doDebug) {
+      AdvanceDebugStepIndex(trackId);
+      ClearDebugContext();
+    }
     return true;
   }
 
   // === 4. Sample MSC direction change and displacement.
   SampleMSC(hepEmData, hepEmPars, theElTrack, rnge);
+  LogPerformContinuousCheckpoint("after_SampleMSC", stepIndex, -1, theElTrack);
 
   // === 5. Sample loss fluctuations.
-  return SampleLossFluctuations(hepEmData, hepEmPars, theElTrack, rnge);
+  const bool stoppedAfterFluct = SampleLossFluctuations(hepEmData, hepEmPars, theElTrack, rnge);
+  LogPerformContinuousCheckpoint("after_SampleLossFluctuations", stepIndex, stoppedAfterFluct ? 1 : 0, theElTrack);
+  if (doDebug) {
+    AdvanceDebugStepIndex(trackId);
+    ClearDebugContext();
+  }
+  return stoppedAfterFluct;
 }
 
 
@@ -575,6 +997,8 @@ G4double G4HepEmElectronManager::ComputeMacXsecAnnihilationForStepping(const G4d
 
 void G4HepEmElectronManager::ConvertTrueToGeometricLength(const G4HepEmData* hepEmData, G4HepEmMSCTrackData* mscData,
                                                          G4double ekin, G4double range, int imc, bool iselectron) {
+  LogConversionCheckpoint("conv_t2g_enter", -1, mscData, range, DebugNaN(), ekin);
+  const G4double convEps = ConversionDerivativeEpsilon();
   mscData->fPar1 = -1.;
   mscData->fPar2 =  0.;
   mscData->fPar3 =  0.;
@@ -583,11 +1007,13 @@ void G4HepEmElectronManager::ConvertTrueToGeometricLength(const G4HepEmData* hep
   //       might limits the true step length in the true --> geom conversion, we might drop this
   //       that makes possible the decision if MSC limited the step even before this conversion.
   mscData->fTrueStepLength = G4HepEmMin(mscData->fTrueStepLength, range);
+  LogConversionCheckpoint("conv_t2g_after_true_clamp", -1, mscData, range, DebugNaN(), ekin);
   //  do the true -> geom transformation
   mscData->fZPathLength = mscData->fTrueStepLength;
   // z = t for very small true-path-length
   const G4double kTlimitMinfix2 = 1.0E-6; // 1 [nm]
   if (mscData->fTrueStepLength < kTlimitMinfix2) {
+    LogConversionCheckpoint("conv_t2g_small_true_return", 1, mscData, range, DebugNaN(), ekin);
     return;
   }
   //
@@ -596,35 +1022,43 @@ void G4HepEmElectronManager::ConvertTrueToGeometricLength(const G4HepEmData* hep
   const G4double tau        = mscData->fTrueStepLength / mscData->fLambtr1;
   if (tau < kTauSmall) {
     mscData->fZPathLength = G4HepEmMin(mscData->fTrueStepLength, mscData->fLambtr1);
+    LogConversionCheckpoint("conv_t2g_branch_tau_small", -1, mscData, range, DebugNaN(), ekin);
   } else if (mscData->fTrueStepLength < range * kDtrl) {
     const G4double kTauLim  = 1.0e-6;
     mscData->fZPathLength = (tau < kTauLim)
                             ? (G4double)(mscData->fTrueStepLength * (1. - 0.5 * tau))
                             : (G4double)(mscData->fLambtr1 * (1. - G4HepEmExp(-tau)));
+    LogConversionCheckpoint("conv_t2g_branch_short_step", -1, mscData, range, DebugNaN(), ekin);
   } else if (ekin < kElectronMassC2 || mscData->fTrueStepLength == range) {
-    mscData->fPar1        = 1. / range;
-    mscData->fPar2        = 1. / (mscData->fPar1 * mscData->fLambtr1);
+    mscData->fPar1        = RegularizedRatioKeepPrimal(1.0, range, convEps);
+    mscData->fPar2        = RegularizedRatioKeepPrimal(1.0, mscData->fPar1 * mscData->fLambtr1, convEps);
     mscData->fPar3        = 1. + mscData->fPar2;
-    mscData->fZPathLength = 1. / (mscData->fPar1 * mscData->fPar3);
+    mscData->fZPathLength = RegularizedRatioKeepPrimal(1.0, mscData->fPar1 * mscData->fPar3, convEps);
     if (mscData->fTrueStepLength < range) {
       mscData->fZPathLength *= (1. - G4HepEmPow(1. - mscData->fTrueStepLength/range, mscData->fPar3));
     }
+    LogConversionCheckpoint("conv_t2g_branch_lowE_or_range", -1, mscData, range, DebugNaN(), ekin);
   } else {
     const G4double rfin     = G4HepEmMax(range - mscData->fTrueStepLength, 0.01 * range);
     const G4HepEmElectronData* elData = iselectron ? hepEmData->fTheElectronData : hepEmData->fThePositronData;
     const G4double t1       = GetInvRange(elData, imc, rfin);
     const int    imat     = (hepEmData->fTheMatCutData->fMatCutData[imc]).fHepEmMatIndex;
     const G4double lambda1  = GetTransportMFP(elData, imat, t1, G4HepEmLog(t1));
-    mscData->fPar1        = (mscData->fLambtr1 - lambda1) / (mscData->fLambtr1 * mscData->fTrueStepLength); // alpha
-    mscData->fPar2        = 1. / (mscData->fPar1 * mscData->fLambtr1);
+    mscData->fPar1        = RegularizedRatioKeepPrimal(mscData->fLambtr1 - lambda1, mscData->fLambtr1 * mscData->fTrueStepLength, convEps); // alpha
+    mscData->fPar2        = RegularizedRatioKeepPrimal(1.0, mscData->fPar1 * mscData->fLambtr1, convEps);
     mscData->fPar3        = 1. + mscData->fPar2;
-    mscData->fZPathLength = (1. - G4HepEmPow(lambda1/mscData->fLambtr1, mscData->fPar3))/(mscData->fPar1 * mscData->fPar3);
+    const G4double zNum = 1. - G4HepEmPow(lambda1/mscData->fLambtr1, mscData->fPar3);
+    mscData->fZPathLength = RegularizedRatioKeepPrimal(zNum, mscData->fPar1 * mscData->fPar3, convEps);
+    LogConversionCheckpoint("conv_t2g_branch_full_model", -1, mscData, range, DebugNaN(), ekin);
   }
   mscData->fZPathLength = G4HepEmMin(mscData->fZPathLength, mscData->fLambtr1);
+  LogConversionCheckpoint("conv_t2g_exit", 0, mscData, range, DebugNaN(), ekin);
 }
 
 
 void G4HepEmElectronManager::ConvertGeometricToTrueLength(G4HepEmMSCTrackData* mscData, G4double range, G4double gStepToConvert) {
+  LogConversionCheckpoint("conv_g2t_enter", -1, mscData, range, gStepToConvert, DebugNaN());
+  const G4double convEps = ConversionDerivativeEpsilon();
   // step was not defined by transportation: i.e. physics so we know everything,
   // i.e. fTrueStepLength is known because the particle went as far as we expected
   // NOTE: this is done directly now in the caller
@@ -639,27 +1073,34 @@ void G4HepEmElectronManager::ConvertGeometricToTrueLength(G4HepEmMSCTrackData* m
   const G4double kTLimitMinfix2 = 1.0E-6; // 1 [nm]
   if (gStepToConvert < kTLimitMinfix2) {
     mscData->fTrueStepLength = gStepToConvert;
+    LogConversionCheckpoint("conv_g2t_small_step", 0, mscData, range, gStepToConvert, DebugNaN());
   } else {
     // recalculation
     const G4double kTauSmall = 1.0e-16;
     G4double tlength = gStepToConvert;
     if (gStepToConvert > mscData->fLambtr1 * kTauSmall) {
       if (mscData->fPar1 < 0.) {
-        tlength = -mscData->fLambtr1 * G4HepEmLog(1. - gStepToConvert / mscData->fLambtr1);
+        const G4double logTerm = RegularizedLogOneMinusRatioKeepPrimal(gStepToConvert, mscData->fLambtr1, convEps);
+        tlength = -mscData->fLambtr1 * logTerm;
+        LogConversionCheckpoint("conv_g2t_branch_par1_neg", -1, mscData, range, gStepToConvert, DebugNaN());
       } else {
         const G4double dum = mscData->fPar1 * mscData->fPar3 * gStepToConvert;
         if (dum < 1.) {
-          tlength = (1. - G4HepEmPow(1.-dum, 1./mscData->fPar3)) / mscData->fPar1;
+          tlength = RegularizedConvertParPosKeepPrimal(mscData->fPar1, mscData->fPar3, gStepToConvert, convEps);
+          LogConversionCheckpoint("conv_g2t_branch_par1_pos_dum_lt_1", -1, mscData, range, gStepToConvert, DebugNaN());
         } else {
           tlength = range;
+          LogConversionCheckpoint("conv_g2t_branch_par1_pos_dum_ge_1", -1, mscData, range, gStepToConvert, DebugNaN());
         }
       }
       if (tlength < gStepToConvert) {
         tlength = gStepToConvert;
+        LogConversionCheckpoint("conv_g2t_apply_monotonic_guard", -1, mscData, range, gStepToConvert, DebugNaN());
       }
     }
     // we make sure in the caller that the results of g->t conversion is not longer
     // than the original true step length
     mscData->fTrueStepLength = tlength;
   }
+  LogConversionCheckpoint("conv_g2t_exit", 0, mscData, range, gStepToConvert, DebugNaN());
 }
