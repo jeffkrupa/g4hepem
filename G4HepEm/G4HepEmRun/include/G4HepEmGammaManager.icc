@@ -34,6 +34,11 @@ G4double& GammaPhotoelectricInvEDerivativeEkinFloor() {
   return floor;
 }
 
+G4double& GammaMfpCap() {
+  static G4double cap = static_cast<G4double>(0.0);
+  return cap;
+}
+
 inline G4double GammaStopGrad(const G4double& x) {
   return static_cast<G4double>(GET_VALUE(x));
 }
@@ -65,6 +70,28 @@ inline G4double GammaRegularizedNumIADecrement(const G4double& pStepLength, cons
 
 inline G4double GammaRegularizedInvEKeepPrimal(const G4double& ekin) {
   return GammaRegularizedRatioKeepPrimal(1.0, ekin, GammaPhotoelectricInvEDerivativeEkinFloor());
+}
+
+inline G4double GammaRegularizedMfpProductKeepPrimal(const G4double& mfp, const G4double& numIA, const G4double& mfpCap) {
+  if (!(GET_VALUE(mfpCap) > 0.0)) {
+    return mfp * numIA;
+  }
+  const G4double mfpVal   = GammaStopGrad(mfp);
+  const G4double numIAVal = GammaStopGrad(numIA);
+  const bool     isCapped = GET_VALUE(mfp) > GET_VALUE(mfpCap);
+  const G4double mfpRegVal = isCapped ? GammaStopGrad(mfpCap) : mfpVal;
+  const G4double primal   = GammaStopGrad(mfp * numIA);
+  // Jacobian of min(mfp, cap) * numIA:
+  //   d/d(mfp)  = numIAVal when mfp < cap, else 0 (mfp capped -> its derivative zeroed)
+  //   d/d(numIA) = mfpRegVal = min(mfpVal, cap)
+  const G4double dfdMfp   = isCapped ? GammaStopGrad(0.0) : numIAVal;
+  const G4double dfdNumIA = mfpRegVal;
+  const G4double corr = (mfp - mfpVal) * dfdMfp + (numIA - numIAVal) * dfdNumIA;
+  return primal + (corr - GammaStopGrad(corr));
+}
+
+inline G4double GammaRegularizedStepLimit(const G4double& mfp, const G4double& numIA) {
+  return GammaRegularizedMfpProductKeepPrimal(mfp, numIA, GammaMfpCap());
 }
 }  // namespace
 
@@ -109,7 +136,7 @@ void G4HepEmGammaManager::HowFar(struct G4HepEmData* hepEmData, struct G4HepEmPa
     // the `number-of-intercation-left` should be updated in the along-step-action
     theTrack->SetMFP(mfp, ip);
     // sample the proposed step length
-    const G4double dStepLimit = mfp*theTrack->GetNumIALeft(ip);
+    const G4double dStepLimit = GammaRegularizedStepLimit(mfp, theTrack->GetNumIALeft(ip));
 //    std::cout << " ip = " << ip << " mxsec = " << mxsec << " dStepLimit = " << dStepLimit << std::endl;
     if (dStepLimit<pStepLength) {
       pStepLength = dStepLimit;
@@ -175,6 +202,10 @@ void G4HepEmGammaManager::ConfigureNumIALeftDerivativeRegularization(G4double mf
 
 void G4HepEmGammaManager::ConfigurePhotoelectricDerivativeRegularization(G4double ekinFloor) {
   GammaPhotoelectricInvEDerivativeEkinFloor() = GET_VALUE(ekinFloor) > 0.0 ? ekinFloor : static_cast<G4double>(0.0);
+}
+
+void G4HepEmGammaManager::ConfigureMfpCapRegularization(G4double mfpCap) {
+  GammaMfpCap() = GET_VALUE(mfpCap) > 0.0 ? mfpCap : static_cast<G4double>(0.0);
 }
 
 

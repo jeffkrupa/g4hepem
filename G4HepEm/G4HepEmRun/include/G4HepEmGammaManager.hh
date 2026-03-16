@@ -55,6 +55,13 @@ public:
     *                  of 1/ekin in GetMacXSecPE. Set to 0 to disable.
     */
   static void ConfigurePhotoelectricDerivativeRegularization(G4double ekinFloor);
+
+  /** Configure derivative-only MFP cap for gamma HowFar step-limit computation.
+    *
+    * @param mfpCap upper bound [mm] on MFP used in derivative of dStepLimit = mfp * numIALeft.
+    *               Set to 0 to disable.
+    */
+  static void ConfigureMfpCapRegularization(G4double mfpCap);
   
 
   G4HepEmHostDevice
